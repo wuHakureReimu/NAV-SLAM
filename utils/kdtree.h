@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 #include <stddef.h>
-#include "../src/mapping.h"
+#include "pointcloud.h"
 
 typedef struct KDNode {
     Point point;

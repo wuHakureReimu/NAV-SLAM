@@ -4,64 +4,12 @@
 #include <jansson.h>
 #include <math.h> 
 #include <stdbool.h> 
+#include "kdtree.h"
+#include "pointcloud.h"
 
 //#define DEBUG_PRINT
 #define FILE_PRINT
 
-// 定义Lidar数据帧结构
-#define MAX_ROWS 8
-#define MAX_COLS 8
-
-//雷达帧
-typedef struct {
-    int ToF_timestamps;  // 时间戳
-    int ToF_distances[MAX_ROWS][MAX_COLS];  // 距离矩阵
-} LidarDataFrame;
-
-// 定义IMU数据帧结构
-typedef struct {
-    int IMU_timestamps;  // 时间戳
-    double x;
-    double y;
-    double z;
-} IMUDataFrame;
-
-// 定义 Point 结构体，用于表示3D坐标
-typedef struct {
-    double x;  // x 坐标
-    double y;  // y 坐标
-    double z;  // z 坐标
-} Point;
-
-// 点云帧
-typedef struct {
-    int ToF_timestamps;        // 时间戳
-    Point ToF_position [MAX_ROWS][MAX_COLS];  // 3D点矩阵，每个元素是一个 Point
-} PointCloud;
-
-// KDTree节点定义
-typedef struct KDNode {
-    Point point;        // 存储点数据
-    struct KDNode* left;  // 左子树
-    struct KDNode* right; // 右子树
-} KDNode;
-
-//最近邻点对
-typedef struct {
-    Point oriPoint; //投影前的点
-    Point nearestPoint;
-    double distance;//投影后的当前帧点和最近邻点的距离
-} NeighborResult;
-
-// 位姿信息结构体
-typedef struct {
-    double imu_x;      // IMU原始x坐标 (mm)
-    double imu_y;      // IMU原始y坐标 (mm)
-    double imu_z;      // IMU原始z坐标 (mm)
-    double modified_x; // mapping修正后的x坐标 (mm)
-    double modified_y; // mapping修正后的y坐标 (mm)
-    double modified_z; // mapping修正后的z坐标 (mm)
-} PoseInfo;
 
 //3个自由度的位姿变化：xyz 3个方向的位移变化
 KDNode* lastKdTreeRoot[MAX_ROWS] = { NULL };  // 用来存储上一帧每一行的 KD-Tree 根节点
@@ -253,68 +201,6 @@ void flattenPoints(Point rowPoints[MAX_COLS], int FeatureMatrix[MAX_COLS], Point
     #endif
 }
 
-// 获取分割轴（根据深度进行递归）
-int getAxis(int depth) {
-    return depth % 3;  // 0: x轴, 1: y轴, 2: z轴
-}
-
-// 计算欧几里得距离
-double euclideanDistance(Point p1, Point p2) {
-    return sqrt(pow(p1.x - p2.x, 2) + pow(p1.y - p2.y, 2) + pow(p1.z - p2.z, 2));
-}
-
-// 构建KD-Tree的递归函数
-KDNode* buildKDTree(Point *points, size_t numPoints, int depth) {
-    if (numPoints == 0) {
-        return NULL;
-    }
-
-    // 选择分割轴
-    int axis = getAxis(depth);
-
-    // 按照当前轴排序
-    for (size_t i = 0; i < numPoints - 1; ++i) {
-        for (size_t j = i + 1; j < numPoints; ++j) {
-            double compare = 0;
-            switch (axis) {
-                case 0: compare = points[i].x - points[j].x;break;  // x轴
-                case 1: compare = points[i].y - points[j].y;break;  // y轴
-                case 2: compare = points[i].z - points[j].z;break;  // z轴
-            }
-            if (compare > 0) {
-                Point temp = points[i];
-                points[i] = points[j];
-                points[j] = temp;
-            }
-        }
-    }
-
-    
-    // 选择中位数作为节点
-    size_t median = numPoints / 2;
-    KDNode* node = (KDNode*)malloc(sizeof(KDNode));
-    node->point = points[median];
-
-    // 构建左右子树
-    node->left = buildKDTree(points, median, depth + 1);
-    node->right = buildKDTree(points + median + 1, numPoints - median - 1, depth + 1);
-
-    return node;
-}
-
-// 递归输出KD-Tree节点
-void printKDTree(KDNode* node, int depth) {
-    if (node == NULL) {
-        return;
-    }
-
-    // 打印当前节点的坐标
-    printf("深度 %d: Point(x=%.2f, y=%.2f, z=%.2f)\n", depth, node->point.x, node->point.y, node->point.z);
-
-    // 递归打印左子树和右子树
-    printKDTree(node->left, depth + 1);
-    printKDTree(node->right, depth + 1);
-}
 
 // 计算位移的函数
 void computeDisplacement(IMUDataFrame* imuData, IMUDataFrame* lastModifiedPosition, double transform[3]) {
@@ -342,44 +228,6 @@ void mapCoordinatesToLastFrame(PointCloud* globalPointCloudData, double transfor
     }
 }
 
-// 最近邻搜索函数
-void nearestNeighborSearch(KDNode* root, Point* target, Point* result, double bestDist, int depth) {
-    if (root == NULL) return;
-
-    // 计算当前节点到目标点的距离
-    double dist = euclideanDistance(root->point, *target);
-    if (dist < bestDist) {
-        bestDist = dist;
-        *result = root->point;  // 假设此时找到了最近邻点
-    }
-
-    // 确定当前轴
-    int axis = getAxis(depth);
-
-    // 根据目标点的坐标判断递归搜索哪个子树
-    KDNode* nextBranch = NULL;
-    KDNode* oppositeBranch = NULL;
-
-    if ((axis == 0 && target->x < root->point.x) ||
-        (axis == 1 && target->y < root->point.y) ||
-        (axis == 2 && target->z < root->point.z)) {
-        nextBranch = root->left;
-        oppositeBranch = root->right;
-    } else {
-        nextBranch = root->right;
-        oppositeBranch = root->left;
-    }
-
-    // 递归搜索下一个子树
-    nearestNeighborSearch(nextBranch, target, result, bestDist, depth + 1);
-
-    // 如果有可能，检查另一个子树
-    if (fabs((axis == 0 ? target->x - root->point.x :
-               axis == 1 ? target->y - root->point.y :
-                           target->z - root->point.z)) < bestDist) {
-        nearestNeighborSearch(oppositeBranch, target, result, bestDist, depth + 1);
-    }
-}
 
 void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, PointCloud *globalPointCloudData,size_t *frameCount) {
     IMUDataFrame CurModifiedPosition; // pm(i) 修正后的imu全局位置
@@ -562,7 +410,7 @@ void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, Poin
                         Point currentPoint = positionInLastFrame.ToF_position[row][col];
                         Point CurnearestPoint = currentPoint;
                         double bestDist = INFINITY;  // 初始设为一个非常大的值
-                        nearestNeighborSearch(lastKdTreeRoot[row], &currentPoint, &CurnearestPoint, bestDist, 0);  // 修改为针对每一行的KDTree
+                        nearestNeighborSearch(lastKdTreeRoot[row], &currentPoint, &CurnearestPoint, &bestDist, 0);  // 修改为针对每一行的KDTree
 
                     //放入最近邻数组
                         //每一行的第一个点
@@ -716,10 +564,10 @@ int main() {
     size_t lidarCount = 0, imuCount = 0;
 
     // 读取Lidar数据
-    LidarProcessData("parsed_data_copy.json", lidarData, &lidarCount);
+    LidarProcessData("parsed_data.json", lidarData, &lidarCount);
     
     // 读取IMU数据
-    IMUProcessData("parsed_data_copy.json", imuData, &imuCount);
+    IMUProcessData("parsed_data.json", imuData, &imuCount);
 
     #ifdef DEBUG_PRINT
         printf("Lidar数据:\n");

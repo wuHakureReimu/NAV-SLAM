@@ -66,7 +66,7 @@ KDNode* buildKDTree(Point *points, size_t numPoints, int depth) {
 void freeKDTree(KDNode* root) {
     if (!root) return;
     freeKDTree(root->left);
-    freeKDTree(root_>right);
+    freeKDTree(root->right);
     free(root);
 }
 

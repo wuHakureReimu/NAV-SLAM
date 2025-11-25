@@ -7,6 +7,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 
+# -------------------------------
 # 查找jansson库
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JANSSON REQUIRED jansson)
@@ -44,18 +45,18 @@ target_link_libraries(kdtree
 
 # -------------------------------
 # main文件
-add_executable(mapping_exe
-    src/mapping.c
+add_executable(main.exe
+    src/main.c
 )
 
-target_include_directories(mapping_exe
+target_include_directories(main.exe
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/utils
         ${JANSSON_INCLUDE_DIRS}
 )
 
 # 链接库
-target_link_libraries(mapping_exe
+target_link_libraries(main.exe
     PRIVATE
         kdtree
         pointcloud

@@ -1,3 +1,5 @@
 build
 dataset
 .vscode
+*parsed_data.json
+*point_cloud_data_with_pose.csv

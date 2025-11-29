@@ -114,11 +114,13 @@ void IMUProcessData(const char *filename, IMUDataFrame *imuData, size_t *imuCoun
                 json_t *params = json_object_get(obj, "params");
                 if (json_is_array(params) && json_array_size(params) == 6)
                 {
+                    imuData[*imuCount].roll = json_real_value(json_array_get(params, 0));
+                    imuData[*imuCount].pitch = json_real_value(json_array_get(params, 1));
+                    imuData[*imuCount].yaw = json_real_value(json_array_get(params, 2));
                     imuData[*imuCount].x = json_real_value(json_array_get(params, 3));
                     imuData[*imuCount].y = json_real_value(json_array_get(params, 4));
                     imuData[*imuCount].z = json_real_value(json_array_get(params, 5));
                 }
-
                 // 增加 imuCount 计数器，准备存储下一个数据对象
                 (*imuCount)++;
             }
@@ -161,8 +163,9 @@ int main()
     printf("\nIMU数据:\n");
     for (size_t i = 0; i < imuCount; ++i)
     {
-        printf("IMU %zu: 时间戳: %d, x: %.6f, y: %.6f, z: %.6f\n",
+        printf("IMU %zu: 时间戳: %d, roll: %.6f, pitch: %.6f, yaw: %.6f, x: %.6f, y: %.6f, z: %.6f\n",
                i + 1, imuData[i].IMU_timestamps,
+               imuData[i].roll, imuData[i].pitch, imuData[i].yaw,
                imuData[i].x, imuData[i].y, imuData[i].z);
     }
 #endif

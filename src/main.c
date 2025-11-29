@@ -61,8 +61,6 @@ void LidarProcessData(const char *filename, LidarDataFrame *lidarData, size_t *l
                         }
                     }
                 }
-
-                // 如果有其他字段需要处理，可以在此添加代码
             }
 
             // 增加 lidarCount 计数器，准备存储下一个数据对象
@@ -117,6 +115,9 @@ void IMUProcessData(const char *filename, IMUDataFrame *imuData, size_t *imuCoun
                     imuData[*imuCount].x = json_real_value(json_array_get(params, 3));
                     imuData[*imuCount].y = json_real_value(json_array_get(params, 4));
                     imuData[*imuCount].z = json_real_value(json_array_get(params, 5));
+                    imuData[*imuCount].roll = json_real_value(json_array_get(params, 0));
+                    imuData[*imuCount].pitch = json_real_value(json_array_get(params, 1));
+                    imuData[*imuCount].yaw = json_real_value(json_array_get(params, 2));
                 }
 
                 // 增加 imuCount 计数器，准备存储下一个数据对象
@@ -161,46 +162,90 @@ int main()
     printf("\nIMU数据:\n");
     for (size_t i = 0; i < imuCount; ++i)
     {
-        printf("IMU %zu: 时间戳: %d, x: %.6f, y: %.6f, z: %.6f\n",
+        printf("IMU %zu: 时间戳: %d, x: %.6f, y: %.6f, z: %.6f, roll: %.6f, pitch: %.6f, yaw: %.6f\n",
                i + 1, imuData[i].IMU_timestamps,
-               imuData[i].x, imuData[i].y, imuData[i].z);
+               imuData[i].x, imuData[i].y, imuData[i].z, imuData[i].roll, imuData[i].pitch, imuData[i].yaw);
     }
 #endif
 
 #ifdef FILE_PRINT
     // 打开CSV文件用于写入
-    FILE *csvFile = fopen("point_cloud_data_with_pose.csv", "w");
+    FILE *csvFile = fopen("point_cloud_data_with_ekf.csv", "w");
     if (csvFile == NULL)
     {
         perror("无法打开CSV文件");
         return 1;
     }
 
-    // 表头
-    fprintf(csvFile, "Timestamp,Row,Col,x,y,z,distance,IMU_x,IMU_y,IMU_z,Modified_x,Modified_y,Modified_z\n");
+    // 表头 - 增加EKF相关字段
+    fprintf(csvFile, "Timestamp,Row,Col,x,y,z,distance,IMU_x,IMU_y,IMU_z,EKF_x,EKF_y,EKF_z,EKF_roll,EKF_pitch,EKF_yaw\n");
 #endif
 
-    // 使用EKF紧耦合
-    for (size_t i = 1; i < lidarCount + 1; i++)
+    // EKF紧耦合处理
+    printf("开始EKF紧耦合处理...\n");
+    
+    for (size_t i = 0; i < lidarCount && i < imuCount; i++)
     {
-    }
-    // 使用lidarData和imuData进行建图
-    for (size_t i = 1; i < lidarCount + 1; i++)
-    { // lidarCount + 1
-        laserCloudHandler(lidarData[i - 1], imuData[i - 1], &GlobalpointCloudData[i - 1], &i);
-
-#ifdef DEBUG_PRINT
-        printf("时间戳: %zu\n", lidarData[i - 1].ToF_timestamps);
+        printf("\n=== 处理第 %zu 帧 ===\n", i + 1);
+        
+        // 1. 首先进行mapping配准得到LiDAR位姿观测值
+        IMUDataFrame lidar_pose_observation;
+        
+        // 调用mapping函数进行点云配准
+        laserCloudHandler(lidarData[i], imuData[i], &GlobalpointCloudData[i], &i);
+        
+        // 从mapping结果中提取LiDAR观测位姿
+        lidar_pose_observation.IMU_timestamps = imuData[i].IMU_timestamps;
+        lidar_pose_observation.x = currentPose.modified_x / 1000.0;  // 转换为米
+        lidar_pose_observation.y = currentPose.modified_y / 1000.0;
+        lidar_pose_observation.z = currentPose.modified_z / 1000.0;
+        // 注意：mapping只修正了位置，姿态使用IMU的原始值
+        lidar_pose_observation.roll = imuData[i].roll;
+        lidar_pose_observation.pitch = imuData[i].pitch;
+        lidar_pose_observation.yaw = imuData[i].yaw;
+        
+        printf("LiDAR观测位姿: x=%.6f, y=%.6f, z=%.6f\n", 
+               lidar_pose_observation.x, lidar_pose_observation.y, lidar_pose_observation.z);
+        printf("IMU预测位姿: x=%.6f, y=%.6f, z=%.6f\n", 
+               imuData[i].x, imuData[i].y, imuData[i].z);
+        
+        // 2. 使用EKF进行紧耦合融合
+        IMUDataFrame ekf_result = EKF(imuData[i], lidar_pose_observation);
+        
+        printf("EKF融合结果: x=%.6f, y=%.6f, z=%.6f, roll=%.6f, pitch=%.6f, yaw=%.6f\n",
+               ekf_result.x, ekf_result.y, ekf_result.z,
+               ekf_result.roll, ekf_result.pitch, ekf_result.yaw);
+        
+        // 3. 使用EKF结果更新全局点云坐标
+        PointCloud PointCloudData_TOF;
+        PointCloudData_TOF.ToF_timestamps = lidarData[i].ToF_timestamps;
+        
+        // 深度图转换为相对于tof传感器的相对坐标
+        convertToPointCloud(lidarData[i].ToF_distances, PointCloudData_TOF.ToF_position);
+        
+        // 使用EKF融合后的位姿重新计算全局点云
         for (int row = 0; row < MAX_ROWS; ++row)
         {
             for (int col = 0; col < MAX_COLS; ++col)
             {
-                printf("Point[%d][%d]: x = %.2f, y = %.2f, z = %.2f,distance = %d\n",
+                GlobalpointCloudData[i].ToF_position[row][col].x = (ekf_result.x * 1000) + PointCloudData_TOF.ToF_position[row][col].x;
+                GlobalpointCloudData[i].ToF_position[row][col].y = (ekf_result.y * 1000) + PointCloudData_TOF.ToF_position[row][col].y;
+                GlobalpointCloudData[i].ToF_position[row][col].z = (ekf_result.z * 1000) + PointCloudData_TOF.ToF_position[row][col].z;
+            }
+        }
+
+#ifdef DEBUG_PRINT
+        printf("时间戳: %zu\n", lidarData[i].ToF_timestamps);
+        for (int row = 0; row < MAX_ROWS; ++row)
+        {
+            for (int col = 0; col < MAX_COLS; ++col)
+            {
+                printf("Point[%d][%d]: x = %.2f, y = %.2f, z = %.2f, distance = %d\n",
                        row, col,
-                       GlobalpointCloudData[i - 1].ToF_position[row][col].x,
-                       GlobalpointCloudData[i - 1].ToF_position[row][col].y,
-                       GlobalpointCloudData[i - 1].ToF_position[row][col].z,
-                       lidarData[i - 1].ToF_distances[row][col]);
+                       GlobalpointCloudData[i].ToF_position[row][col].x,
+                       GlobalpointCloudData[i].ToF_position[row][col].y,
+                       GlobalpointCloudData[i].ToF_position[row][col].z,
+                       lidarData[i].ToF_distances[row][col]);
             }
         }
 #endif
@@ -210,29 +255,38 @@ int main()
         {
             for (int col = 0; col < MAX_COLS; ++col)
             {
-                // 输出到CSV文件 - 增加位姿信息
-                fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
-                        lidarData[i - 1].ToF_timestamps,
+                // 输出到CSV文件 - 增加EKF融合后的位姿信息
+                fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                        lidarData[i].ToF_timestamps,
                         row, col,
-                        GlobalpointCloudData[i - 1].ToF_position[row][col].x,
-                        GlobalpointCloudData[i - 1].ToF_position[row][col].y,
-                        GlobalpointCloudData[i - 1].ToF_position[row][col].z,
-                        lidarData[i - 1].ToF_distances[row][col],
-                        currentPose.imu_x,      // IMU原始x坐标
-                        currentPose.imu_y,      // IMU原始y坐标
-                        currentPose.imu_z,      // IMU原始z坐标
-                        currentPose.modified_x, // mapping修正后的x坐标
-                        currentPose.modified_y, // mapping修正后的y坐标
-                        currentPose.modified_z  // mapping修正后的z坐标
+                        GlobalpointCloudData[i].ToF_position[row][col].x,
+                        GlobalpointCloudData[i].ToF_position[row][col].y,
+                        GlobalpointCloudData[i].ToF_position[row][col].z,
+                        lidarData[i].ToF_distances[row][col],
+                        currentPose.imu_x,      // IMU原始x坐标(mm)
+                        currentPose.imu_y,      // IMU原始y坐标(mm)
+                        currentPose.imu_z,      // IMU原始z坐标(mm)
+                        ekf_result.x * 1000,    // EKF融合x坐标(mm)
+                        ekf_result.y * 1000,    // EKF融合y坐标(mm)
+                        ekf_result.z * 1000,    // EKF融合z坐标(mm)
+                        ekf_result.roll,        // EKF融合roll
+                        ekf_result.pitch,       // EKF融合pitch
+                        ekf_result.yaw          // EKF融合yaw
                 );
             }
         }
 #endif
+        
+        // 每处理10帧输出一次进度
+        if ((i + 1) % 10 == 0)
+        {
+            printf("已处理 %zu/%zu 帧数据\n", i + 1, lidarCount);
+        }
     }
 
 #ifdef FILE_PRINT
     fclose(csvFile);
-    printf("数据已保存到 point_cloud_data_with_pose.csv\n");
+    printf("数据已保存到 point_cloud_data.csv\n");
 #endif
 
     return 0;

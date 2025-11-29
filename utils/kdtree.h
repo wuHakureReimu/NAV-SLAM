@@ -1,7 +1,6 @@
 #ifndef KDTREE_H
 #define KDTREE_H
 
-#include <stdio.h>
 #include <stddef.h>
 #include "pointcloud.h"
 

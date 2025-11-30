@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include "kdtree.h"
 #include "pointcloud.h"
+#define DEG2RAD(x) ((x) * M_PI / 180.0)
 
 // 3个自由度的位姿变化：xyz 3个方向的位移变化
 KDNode *lastKdTreeRoot[MAX_ROWS] = {NULL};   // 用来存储上一帧每一行的 KD-Tree 根节点
@@ -50,6 +51,29 @@ void flattenPoints(Point rowPoints[MAX_COLS], int FeatureMatrix[MAX_COLS], Point
 #endif
 }
 
+// 计算旋转矩阵
+void getRotationMatrix(double roll, double pitch, double yaw, double R[3][3])
+{
+    double cr = cos(roll);
+    double sr = sin(roll);
+    double cp = cos(pitch);
+    double sp = sin(pitch);
+    double cy = cos(yaw);
+    double sy = sin(yaw);
+
+    R[0][0] = cy * cp;
+    R[0][1] = cy * sp * sr - sy * cr;
+    R[0][2] = cy * sp * cr + sy * sr;
+
+    R[1][0] = sy * cp;
+    R[1][1] = sy * sp * sr + cy * cr;
+    R[1][2] = sy * sp * cr - cy * sr;
+
+    R[2][0] = -sp;
+    R[2][1] = cp * sr;
+    R[2][2] = cp * cr;
+}
+
 // 计算位移的函数
 void computeDisplacement(IMUDataFrame *imuData, IMUDataFrame *lastModifiedPosition, double transform[3])
 {
@@ -57,7 +81,6 @@ void computeDisplacement(IMUDataFrame *imuData, IMUDataFrame *lastModifiedPositi
     transform[0] = imuData->x * 1000 - lastModifiedPosition->x; // 计算x轴位移
     transform[1] = imuData->y * 1000 - lastModifiedPosition->y; // 计算y轴位移
     transform[2] = imuData->z * 1000 - lastModifiedPosition->z; // 计算z轴位移
-
 // 打印位移以进行验证
 #ifdef DEBUG_PRINT
     printf("x: %.6f, y: %.6f, z: %.6f\n", transform[0], transform[1], transform[2]);
@@ -85,9 +108,11 @@ void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, Poin
     IMUDataFrame CurModifiedPosition; // pm(i) 修正后的imu全局位置
     PointCloud PointCloudData_TOF;    // 相对于TOF的3D坐标
     double transform[3] = {0};        // 3个自由度的变换
+    double R[3][3];                   // 旋转矩阵
 
     PointCloudData_TOF.ToF_timestamps = lidarDataFrame.ToF_timestamps;
     globalPointCloudData->ToF_timestamps = lidarDataFrame.ToF_timestamps;
+    getRotationMatrix(DEG2RAD(imuData.roll), DEG2RAD(imuData.pitch), DEG2RAD(imuData.yaw), R);
 
     // 设置当前位姿信息中的IMU原始坐标（转换为毫米）
     currentPose.imu_x = imuData.x * 1000;
@@ -118,9 +143,17 @@ void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, Poin
     {
         for (int col = 0; col < MAX_COLS; ++col)
         {
-            globalPointCloudData->ToF_position[row][col].x = (imuData.x * 1000) + PointCloudData_TOF.ToF_position[row][col].x;
-            globalPointCloudData->ToF_position[row][col].y = (imuData.y * 1000) + PointCloudData_TOF.ToF_position[row][col].y;
-            globalPointCloudData->ToF_position[row][col].z = (imuData.z * 1000) + PointCloudData_TOF.ToF_position[row][col].z;
+            double local_x = PointCloudData_TOF.ToF_position[row][col].x;
+            double local_y = PointCloudData_TOF.ToF_position[row][col].y;
+            double local_z = PointCloudData_TOF.ToF_position[row][col].z;
+
+            double rotated_x = R[0][0] * local_x + R[0][1] * local_y + R[0][2] * local_z;
+            double rotated_y = R[1][0] * local_x + R[1][1] * local_y + R[1][2] * local_z;
+            double rotated_z = R[2][0] * local_x + R[2][1] * local_y + R[2][2] * local_z;
+
+            globalPointCloudData->ToF_position[row][col].x = (imuData.x * 1000) + rotated_x;
+            globalPointCloudData->ToF_position[row][col].y = (imuData.y * 1000) + rotated_y;
+            globalPointCloudData->ToF_position[row][col].z = (imuData.z * 1000) + rotated_z;
         }
     }
 
@@ -450,9 +483,17 @@ void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, Poin
     {
         for (int col = 0; col < MAX_COLS; ++col)
         {
-            globalPointCloudData->ToF_position[row][col].x = (CurModifiedPosition.x) + PointCloudData_TOF.ToF_position[row][col].x;
-            globalPointCloudData->ToF_position[row][col].y = (CurModifiedPosition.y) + PointCloudData_TOF.ToF_position[row][col].y;
-            globalPointCloudData->ToF_position[row][col].z = (CurModifiedPosition.z) + PointCloudData_TOF.ToF_position[row][col].z;
+            double local_x = PointCloudData_TOF.ToF_position[row][col].x;
+            double local_y = PointCloudData_TOF.ToF_position[row][col].y;
+            double local_z = PointCloudData_TOF.ToF_position[row][col].z;
+
+            double rotated_x = R[0][0] * local_x + R[0][1] * local_y + R[0][2] * local_z;
+            double rotated_y = R[1][0] * local_x + R[1][1] * local_y + R[1][2] * local_z;
+            double rotated_z = R[2][0] * local_x + R[2][1] * local_y + R[2][2] * local_z;
+
+            globalPointCloudData->ToF_position[row][col].x = (CurModifiedPosition.x) + rotated_x;
+            globalPointCloudData->ToF_position[row][col].y = (CurModifiedPosition.y) + rotated_y;
+            globalPointCloudData->ToF_position[row][col].z = (CurModifiedPosition.z) + rotated_z;
         }
     }
 

@@ -15,9 +15,6 @@ IMUDataFrame lastModifiedPosition;           // 上一帧的修正后IMU位置
 // 是否是第一帧
 bool isFirstFrame = true;
 
-// 全局变量存储当前帧的位姿信息
-PoseInfo currentPose;
-
 // 计算曲率
 int computeCurvature(int i, int row[MAX_COLS])
 {
@@ -114,11 +111,6 @@ void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, Poin
     globalPointCloudData->ToF_timestamps = lidarDataFrame.ToF_timestamps;
     getRotationMatrix(DEG2RAD(imuData.roll), DEG2RAD(imuData.pitch), DEG2RAD(imuData.yaw), R);
 
-    // 设置当前位姿信息中的IMU原始坐标（转换为毫米）
-    currentPose.imu_x = imuData.x * 1000;
-    currentPose.imu_y = imuData.y * 1000;
-    currentPose.imu_z = imuData.z * 1000;
-
     // 深度图转换为相对于tof传感器的相对坐标
     convertToPointCloud(lidarDataFrame.ToF_distances, PointCloudData_TOF.ToF_position);
 
@@ -139,6 +131,7 @@ void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, Poin
 #endif
 
     // 根据imu提供的全局无人机坐标计算数据点的3维绝对坐标
+    // 这里要把IMU坐标改成EKF得到的精确坐标
     for (int row = 0; row < MAX_ROWS; ++row)
     {
         for (int col = 0; col < MAX_COLS; ++col)
@@ -239,11 +232,6 @@ void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, Poin
         lastModifiedPosition.y = imuData.y * 1000;
         lastModifiedPosition.z = imuData.z * 1000;
 
-        // 第一帧时，修正后的坐标等于IMU原始坐标
-        currentPose.modified_x = currentPose.imu_x;
-        currentPose.modified_y = currentPose.imu_y;
-        currentPose.modified_z = currentPose.imu_z;
-
         return; // Pimu1 = Pm1 imu提供的坐标直接作为全局坐标，不修正
     }
 
@@ -306,6 +294,8 @@ void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, Poin
     double beta1 = 0.9;
     double beta2 = 0.999;
     double epsilon = 1e-8;
+
+    // 旋转矩阵需不需要同时优化呢，考虑一下
 
     for (int iter = 0; iter < 200; ++iter)
     {
@@ -472,11 +462,6 @@ void laserCloudHandler(LidarDataFrame lidarDataFrame, IMUDataFrame imuData, Poin
     CurModifiedPosition.x = lastModifiedPosition.x + transform[0];
     CurModifiedPosition.y = lastModifiedPosition.y + transform[1];
     CurModifiedPosition.z = lastModifiedPosition.z + transform[2];
-
-    // 设置当前位姿信息中的修正后坐标
-    currentPose.modified_x = CurModifiedPosition.x;
-    currentPose.modified_y = CurModifiedPosition.y;
-    currentPose.modified_z = CurModifiedPosition.z;
 
     // 计算修正后的点云坐标
     for (int row = 0; row < MAX_ROWS; ++row)

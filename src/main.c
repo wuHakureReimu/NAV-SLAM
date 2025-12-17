@@ -1,8 +1,10 @@
 
 #include <stdio.h>
 #include <jansson.h>
-#include "mapping.c"
-#include "ekf.c"
+
+#include "ekf.h"
+#include "slam.h"
+#include "pointcloud.h"
 
 #define DEBUG_PRINT
 #define FILE_PRINT
@@ -128,19 +130,28 @@ void IMUProcessData(const char *filename, IMUDataFrame *imuData, size_t *imuCoun
     json_decref(root);
 }
 
+// IMU数据帧转Pos
+Pos IMUDataFrame2Pos(IMUDataFrame *imuData) {
+    Pos result = {imuData->x, imuData->y, imuData->z, imuData->roll, imuData->pitch, imuData->yaw};
+    return result;
+}
+
+// LiDAR数据帧转Pointcloud
+void LidarDataFrame2PointCloud(LidarDataFrame *lidarData, PointCloud *lidarPointCloud) {
+    lidarPointCloud->ToF_timestamps = lidarData->ToF_timestamps;
+    convertToPointCloud(lidarData->ToF_distances, lidarPointCloud->ToF_position);
+}
+
+
 // 运行逻辑
 int main()
 {
     // 输入数据格式目前是已经做了时间同步的
     LidarDataFrame lidarData[100];        // LiDAR数据帧
     IMUDataFrame imuData[100];            // IMU位姿预测（硬件已做预积分）
-    PointCloud GlobalpointCloudData[100]; // 全局点云
-
     size_t lidarCount = 0, imuCount = 0;
-    // 读取Lidar数据
-    LidarProcessData("parsed_data.json", lidarData, &lidarCount);
-    // 读取IMU数据
-    IMUProcessData("parsed_data.json", imuData, &imuCount);
+    LidarProcessData("parsed_data.json", lidarData, &lidarCount); // 读取LiDAR数据
+    IMUProcessData("parsed_data.json", imuData, &imuCount); // 读取IMU数据
 
 #ifdef DEBUG_PRINT
     printf("Lidar数据:\n");
@@ -180,6 +191,111 @@ int main()
     fprintf(csvFile, "Timestamp,Row,Col,x,y,z,distance,IMU_x,IMU_y,IMU_z,IMU_roll,IMU_pitch,IMU_yaw,EKF_x,EKF_y,EKF_z,EKF_roll,EKF_pitch,EKF_yaw\n");
 #endif
 
+    // 用第一帧数据，初始化必要的参数
+    EKF_attr ekfattr;
+    init_ekf(&ekfattr, &imuData[0]);
+    Pos pos = ekfattr.pos;
+    PointCloud lidarPointCloud;
+    LidarDataFrame2PointCloud(&lidarData[0], &lidarPointCloud);
+    SLAM_attr slamattr;
+    init_slam(&slamattr, pos, &lidarPointCloud);
+
+    #ifdef DEBUG_PRINT
+    printf("%.2f, %.2f, %.2f, %.2f, %.2f, %.2f \n", imuData[0].x, imuData[0].y, imuData[0].z, imuData[0].roll, imuData[0].pitch, imuData[0].yaw);
+    printf("%.2f, %.2f, %.2f, %.2f, %.2f, %.2f \n", ekfattr.pos.x, ekfattr.pos.y, ekfattr.pos.z, ekfattr.pos.roll, ekfattr.pos.pitch, ekfattr.pos.yaw);
+    printPointCloud(lidarPointCloud);
+    printf("\n");
+    printf("framecount: %d \n", slamattr.frameCount);
+    printPointCloud(slamattr.globalPointCloud[0]);
+    printKDTree(slamattr.kdtree_lastframe[0], 0);
+    #endif
+    #ifdef FILE_PRINT
+        for (int row = 0; row < MAX_ROWS; ++row) {
+            for (int col = 0; col < MAX_COLS; ++col) {
+                // 输出到CSV文件
+                fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                        lidarData[0].ToF_timestamps,
+                        row, col,
+                        slamattr.globalPointCloud[0].ToF_position[row][col].x,
+                        slamattr.globalPointCloud[0].ToF_position[row][col].y,
+                        slamattr.globalPointCloud[0].ToF_position[row][col].z,
+                        lidarData[0].ToF_distances[row][col],
+                        imuData[0].x,      // IMU原始x坐标
+                        imuData[0].y,      // IMU原始y坐标
+                        imuData[0].z,      // IMU原始z坐标
+                        imuData[0].roll,   // IMU原始roll
+                        imuData[0].pitch,  // IMU原始pitch
+                        imuData[0].yaw,    // IMU原始yaw
+                        pos.x,    // EKF融合x坐标
+                        pos.y,    // EKF融合y坐标
+                        pos.z,    // EKF融合z坐标
+                        pos.roll,        // EKF融合roll
+                        pos.pitch,       // EKF融合pitch
+                        pos.yaw          // EKF融合yaw
+                    );
+            }
+        }
+    #endif
+
+    // 之后帧进行SLAM
+    Pos last_pos = pos;
+    for (size_t i = 1; i < lidarCount && i < imuCount; i++) {
+        // 计算IMU差分
+        IMUDataFrame_diff IMUdata_diff;
+        IMUdata_diff.timestamps_diff = imuData[i].IMU_timestamps - imuData[i-1].IMU_timestamps;
+        IMUdata_diff.dx = imuData[i].x - imuData[i-1].x;
+        IMUdata_diff.dy = imuData[i].y - imuData[i-1].y;
+        IMUdata_diff.dz = imuData[i].z - imuData[i-1].z;
+        IMUdata_diff.droll = imuData[i].roll - imuData[i-1].roll;
+        IMUdata_diff.dpitch = imuData[i].pitch - imuData[i-1].pitch;
+        IMUdata_diff.dyaw = imuData[i].yaw - imuData[i-1].yaw;
+
+        // ekf预测
+        ekf_predict(&ekfattr, &IMUdata_diff);
+        Pos pos_predict = ekfattr.pos;
+
+        // slam定位
+        LidarDataFrame2PointCloud(&lidarData[i], &lidarPointCloud);
+        Pos pos_measure = slam_localization(&slamattr, &lidarPointCloud, pos_predict, last_pos);
+
+        // ekf修正
+        ekf_modify(&ekfattr, &pos_measure);
+        pos = ekfattr.pos;
+
+        // slam建图
+        slam_mapping(&slamattr, pos, &lidarPointCloud);
+        last_pos = pos;
+
+        #ifdef FILE_PRINT
+        for (int row = 0; row < MAX_ROWS; ++row) {
+            for (int col = 0; col < MAX_COLS; ++col) {
+                // 输出到CSV文件
+                fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                        lidarData[i].ToF_timestamps,
+                        row, col,
+                        slamattr.globalPointCloud[i].ToF_position[row][col].x,
+                        slamattr.globalPointCloud[i].ToF_position[row][col].y,
+                        slamattr.globalPointCloud[i].ToF_position[row][col].z,
+                        lidarData[i].ToF_distances[row][col],
+                        imuData[i].x,      // IMU原始x坐标
+                        imuData[i].y,      // IMU原始y坐标
+                        imuData[i].z,      // IMU原始z坐标
+                        imuData[i].roll,   // IMU原始roll
+                        imuData[i].pitch,  // IMU原始pitch
+                        imuData[i].yaw,    // IMU原始yaw
+                        pos.x,    // EKF融合x坐标
+                        pos.y,    // EKF融合y坐标
+                        pos.z,    // EKF融合z坐标
+                        pos.roll,        // EKF融合roll
+                        pos.pitch,       // EKF融合pitch
+                        pos.yaw          // EKF融合yaw
+                    );
+            }
+        }
+        #endif
+    }
+
+/*
     // EKF处理
     printf("开始EKF处理...\n");
     
@@ -298,6 +414,7 @@ int main()
             printf("已处理 %zu/%zu 帧数据\n", i + 1, lidarCount);
         }
     }
+*/
 
 #ifdef FILE_PRINT
     fclose(csvFile);

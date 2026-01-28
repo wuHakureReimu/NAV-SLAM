@@ -132,7 +132,7 @@ void IMUProcessData(const char *filename, IMUDataFrame *imuData, size_t *imuCoun
 
 // IMU数据帧转Pos
 Pos IMUDataFrame2Pos(IMUDataFrame *imuData) {
-    Pos result = {imuData->x, imuData->y, imuData->z, imuData->roll, imuData->pitch, imuData->yaw};
+    Pos result = {imuData->x * 1000, imuData->y * 1000, imuData->z * 1000, imuData->roll, imuData->pitch, imuData->yaw};
     return result;
 }
 
@@ -193,8 +193,8 @@ int main()
 
     // 用第一帧数据，初始化必要的参数
     EKF_attr ekfattr;
-    init_ekf(&ekfattr, &imuData[0]);
-    Pos pos = ekfattr.pos;
+    Pos pos = IMUDataFrame2Pos(&imuData[0]);
+    init_ekf(&ekfattr, &pos);
     PointCloud lidarPointCloud;
     LidarDataFrame2PointCloud(&lidarData[0], &lidarPointCloud);
     SLAM_attr slamattr;
@@ -240,18 +240,10 @@ int main()
     // 之后帧进行SLAM
     Pos last_pos = pos;
     for (size_t i = 1; i < lidarCount && i < imuCount; i++) {
-        // 计算IMU差分
-        IMUDataFrame_diff IMUdata_diff;
-        IMUdata_diff.timestamps_diff = imuData[i].IMU_timestamps - imuData[i-1].IMU_timestamps;
-        IMUdata_diff.dx = imuData[i].x - imuData[i-1].x;
-        IMUdata_diff.dy = imuData[i].y - imuData[i-1].y;
-        IMUdata_diff.dz = imuData[i].z - imuData[i-1].z;
-        IMUdata_diff.droll = imuData[i].roll - imuData[i-1].roll;
-        IMUdata_diff.dpitch = imuData[i].pitch - imuData[i-1].pitch;
-        IMUdata_diff.dyaw = imuData[i].yaw - imuData[i-1].yaw;
-
         // ekf预测
-        ekf_predict(&ekfattr, &IMUdata_diff);
+        Pos last_IMUpos = IMUDataFrame2Pos(&imuData[i-1]);
+        Pos IMUpos = IMUDataFrame2Pos(&imuData[i]);
+        ekf_predict(&ekfattr, &last_IMUpos, &IMUpos, 0); // 目前不使用时间戳差分
         Pos pos_predict = ekfattr.pos;
 
         // slam定位

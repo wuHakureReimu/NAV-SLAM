@@ -5,14 +5,6 @@
 #include <stdbool.h>
 #include "pointcloud.h"
 
-
-// IMU 差分数据
-typedef struct
-{
-    int timestamps_diff;
-    double dx, dy, dz, droll, dpitch, dyaw;
-} IMUDataFrame_diff;
-
 // EKF算法维护的属性
 typedef struct
 {
@@ -24,10 +16,10 @@ typedef struct
 } EKF_attr;
 
 // 用第一帧数据初始化
-void init_ekf(EKF_attr *attr, IMUDataFrame *IMUdata);
+void init_ekf(EKF_attr *attr, Pos *init_pos);
 
 // 模型预测
-void ekf_predict(EKF_attr *attr, IMUDataFrame_diff *IMUdata_diff);
+void ekf_predict(EKF_attr *attr, Pos *last_pos, Pos *pos, int time_diff);
 
 // 观测修正
 void ekf_modify(EKF_attr *attr, Pos *LiDAR_measurement_pos);

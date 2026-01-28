@@ -27,7 +27,7 @@ typedef struct
 // 位姿结构体
 typedef struct
 {
-    double x, y, z, roll, pitch, yaw;   // 单位同IMUDataFrame
+    double x, y, z, roll, pitch, yaw;   // 单位：mm，角度制
 } Pos;
 
 

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stddef.h>
 #include "slam.h"
 #include "math.h"
 #include "kdtree.h"
@@ -60,7 +61,7 @@ void extract_feature(PointCloud *lidarPointCloud, int feature[MAX_ROWS][MAX_COLS
 }
 
 // 辅助函数：扁平化PointCloud并筛选出特征点
-void flattenPoints(Point rowPoints[MAX_COLS], int rowFeature[MAX_COLS], Point *flattenedPoints, size_t *numPoints)
+void flattenPoints(Point rowPoints[MAX_COLS], int rowFeature[MAX_COLS], Point flattenedPoints[MAX_COLS], size_t *numPoints)
 {
     *numPoints = 0;
     for (int i = 0; i < MAX_COLS; ++i) {
@@ -79,7 +80,7 @@ void flattenPoints(Point rowPoints[MAX_COLS], int rowFeature[MAX_COLS], Point *f
 #endif
 }
 
-// 辅助函数：计算变换，单位m
+// 辅助函数：计算变换，单位mm
 void compute_posdiff(Pos *pos_now, Pos *pos_last, double pos_diff[6])
 {
     pos_diff[0] = pos_now->x - pos_last->x;
@@ -90,7 +91,7 @@ void compute_posdiff(Pos *pos_now, Pos *pos_last, double pos_diff[6])
     pos_diff[5] = pos_now->yaw - pos_last->yaw;
 }
 
-// 辅助函数：计算旋转矩阵
+// 辅助函数：计算旋转矩阵（输入弧度制）
 void getRotationMatrix(double roll, double pitch, double yaw, double R[3][3])
 {
     double cr = cos(roll);
@@ -122,7 +123,6 @@ void mapCoordinatesToLastFrame(PointCloud *globalPointCloudData, double transfor
         for (int col = 0; col < MAX_COLS; ++col)
         {
             // 将当前坐标减去transform（即计算位置在上一帧的坐标）
-            // 注意：现在所有单位都是米，不需要乘以1000
             positionInLastFrame->ToF_position[row][col].x = globalPointCloudData->ToF_position[row][col].x - transform[0];
             positionInLastFrame->ToF_position[row][col].y = globalPointCloudData->ToF_position[row][col].y - transform[1];
             positionInLastFrame->ToF_position[row][col].z = globalPointCloudData->ToF_position[row][col].z - transform[2];
@@ -143,39 +143,29 @@ void init_slam(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud)
     attr->globalPointCloud[attr->frameCount].ToF_timestamps = lidarPointCloud->ToF_timestamps;
     for (int row = 0; row < MAX_ROWS; ++row) {
         for (int col = 0; col < MAX_COLS; ++col) {
-            double lidar_x = lidarPointCloud->ToF_position[row][col].x / 1000.0; // 毫米转米
-            double lidar_y = lidarPointCloud->ToF_position[row][col].y / 1000.0; // 毫米转米
-            double lidar_z = lidarPointCloud->ToF_position[row][col].z / 1000.0; // 毫米转米
+            double lidar_x = lidarPointCloud->ToF_position[row][col].x;
+            double lidar_y = lidarPointCloud->ToF_position[row][col].y;
+            double lidar_z = lidarPointCloud->ToF_position[row][col].z;
 
             double rotated_x = R[0][0] * lidar_x + R[0][1] * lidar_y + R[0][2] * lidar_z;
             double rotated_y = R[1][0] * lidar_x + R[1][1] * lidar_y + R[1][2] * lidar_z;
             double rotated_z = R[2][0] * lidar_x + R[2][1] * lidar_y + R[2][2] * lidar_z;
 
-            // 单位：米
+            // 单位：mm
             attr->globalPointCloud[attr->frameCount].ToF_position[row][col].x = pos.x + rotated_x;
             attr->globalPointCloud[attr->frameCount].ToF_position[row][col].y = pos.y + rotated_y;
             attr->globalPointCloud[attr->frameCount].ToF_position[row][col].z = pos.z + rotated_z;
         }
     }
 
-    // 特征提取（注意：需要将点云转换为米后再提取特征）
-    // 创建一个临时点云，单位转为米
-    PointCloud lidarPointCloud_m;
-    for (int row = 0; row < MAX_ROWS; ++row) {
-        for (int col = 0; col < MAX_COLS; ++col) {
-            lidarPointCloud_m.ToF_position[row][col].x = lidarPointCloud->ToF_position[row][col].x / 1000.0;
-            lidarPointCloud_m.ToF_position[row][col].y = lidarPointCloud->ToF_position[row][col].y / 1000.0;
-            lidarPointCloud_m.ToF_position[row][col].z = lidarPointCloud->ToF_position[row][col].z / 1000.0;
-        }
-    }
-    
+    // 特征提取
     int feature[MAX_ROWS][MAX_COLS] = {0}; // 特征矩阵
-    extract_feature(&lidarPointCloud_m, feature);
+    extract_feature(lidarPointCloud, feature);
 
     // 初始化第0帧kdtree
     for (int row = 0; row < MAX_ROWS; ++row) {
         Point flattenedPoints[MAX_COLS];
-        size_t numPoints = 0;
+        size_t numPoints;
         flattenPoints(attr->globalPointCloud[attr->frameCount].ToF_position[row], feature[row], flattenedPoints, &numPoints);
         attr->kdtree_lastframe[row] = buildKDTree(flattenedPoints, numPoints, 0); // 对每一行数据单独构建KD-Tree
     }
@@ -189,30 +179,21 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
     double R[3][3];
     getRotationMatrix(DEG2RAD(pos_predict.roll), DEG2RAD(pos_predict.pitch), DEG2RAD(pos_predict.yaw), R);
     
-    // 1. 提取当前帧特征（需要将点云转换为米）
-    PointCloud lidarPointCloud_m;
-    for (int row = 0; row < MAX_ROWS; ++row) {
-        for (int col = 0; col < MAX_COLS; ++col) {
-            lidarPointCloud_m.ToF_position[row][col].x = lidarPointCloud->ToF_position[row][col].x / 1000.0;
-            lidarPointCloud_m.ToF_position[row][col].y = lidarPointCloud->ToF_position[row][col].y / 1000.0;
-            lidarPointCloud_m.ToF_position[row][col].z = lidarPointCloud->ToF_position[row][col].z / 1000.0;
-        }
-    }
-    
+    // 1. 提取当前帧特征    
     int feature[MAX_ROWS][MAX_COLS] = {0};
-    extract_feature(&lidarPointCloud_m, feature);
+    extract_feature(lidarPointCloud, feature);
     
     // 2. 把当前帧点云映射到上一帧，得到positionInLastframe（全局坐标系），便于寻找最近点
     double transform[6];
     compute_posdiff(&pos_predict, &pos_last, transform);
     
-    // 转换当前帧点云到全局坐标系（单位：米）
+    // 转换当前帧点云到全局坐标系
     PointCloud transformed_pointcloud;
     for (int row = 0; row < MAX_ROWS; row++) {
         for (int col = 0; col < MAX_COLS; col++) {
-            double lidar_x = lidarPointCloud_m.ToF_position[row][col].x;
-            double lidar_y = lidarPointCloud_m.ToF_position[row][col].y;
-            double lidar_z = lidarPointCloud_m.ToF_position[row][col].z;
+            double lidar_x = lidarPointCloud->ToF_position[row][col].x;
+            double lidar_y = lidarPointCloud->ToF_position[row][col].y;
+            double lidar_z = lidarPointCloud->ToF_position[row][col].z;
 
             double rotated_x = R[0][0] * lidar_x + R[0][1] * lidar_y + R[0][2] * lidar_z;
             double rotated_y = R[1][0] * lidar_x + R[1][1] * lidar_y + R[1][2] * lidar_z;
@@ -233,7 +214,7 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
     int CPcount = 0;
 
     // 计算每个维度（x, y, z）的梯度
-    double learningRate = 0.001; // 学习率调整为更小的值，因为单位现在是米
+    double learningRate = 0.1; // 学习啦
     double tolerance = 1e-6; // 收敛容忍度
     double previousTotalError = 0;
     double totalError = 0;
@@ -394,7 +375,7 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
     pos_modified.x = pos_last.x + transform[0];
     pos_modified.y = pos_last.y + transform[1];
     pos_modified.z = pos_last.z + transform[2];
-    pos_modified.roll = pos_last.roll + transform[3];
+    pos_modified.roll = pos_last.roll + transform[3];   // 上面的配准算法尚未实现角度变换的配准计算
     pos_modified.pitch = pos_last.pitch + transform[4];
     pos_modified.yaw = pos_last.yaw + transform[5];
 
@@ -413,38 +394,27 @@ void slam_mapping(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud)
     // 将雷达坐标系下的点云转换到全局坐标系下
     for (int row = 0; row < MAX_ROWS; ++row) {
         for (int col = 0; col < MAX_COLS; ++col) {
-            double lidar_x = lidarPointCloud->ToF_position[row][col].x / 1000.0; // 毫米转米
-            double lidar_y = lidarPointCloud->ToF_position[row][col].y / 1000.0; // 毫米转米
-            double lidar_z = lidarPointCloud->ToF_position[row][col].z / 1000.0; // 毫米转米
+            double lidar_x = lidarPointCloud->ToF_position[row][col].x;
+            double lidar_y = lidarPointCloud->ToF_position[row][col].y;
+            double lidar_z = lidarPointCloud->ToF_position[row][col].z;
 
             double rotated_x = R[0][0] * lidar_x + R[0][1] * lidar_y + R[0][2] * lidar_z;
             double rotated_y = R[1][0] * lidar_x + R[1][1] * lidar_y + R[1][2] * lidar_z;
             double rotated_z = R[2][0] * lidar_x + R[2][1] * lidar_y + R[2][2] * lidar_z;
 
-            // 单位：米
             attr->globalPointCloud[attr->frameCount].ToF_position[row][col].x = pos.x + rotated_x;
             attr->globalPointCloud[attr->frameCount].ToF_position[row][col].y = pos.y + rotated_y;
             attr->globalPointCloud[attr->frameCount].ToF_position[row][col].z = pos.z + rotated_z;
         }
     }
 
-    // 构建kdtree，供下一帧配准使用
-    // 创建临时点云（单位：米）用于特征提取
-    PointCloud lidarPointCloud_m;
-    for (int row = 0; row < MAX_ROWS; ++row) {
-        for (int col = 0; col < MAX_COLS; ++col) {
-            lidarPointCloud_m.ToF_position[row][col].x = lidarPointCloud->ToF_position[row][col].x / 1000.0;
-            lidarPointCloud_m.ToF_position[row][col].y = lidarPointCloud->ToF_position[row][col].y / 1000.0;
-            lidarPointCloud_m.ToF_position[row][col].z = lidarPointCloud->ToF_position[row][col].z / 1000.0;
-        }
-    }
-    
+    // 构建kdtree，供下一帧配准使用    
     int feature[MAX_ROWS][MAX_COLS] = {0};
-    extract_feature(&lidarPointCloud_m, feature);
+    extract_feature(lidarPointCloud, feature);
     
     for (int row = 0; row < MAX_ROWS; ++row) {
         Point flattenedPoints[MAX_COLS];
-        size_t numPoints = 0;
+        size_t numPoints;
         flattenPoints(attr->globalPointCloud[attr->frameCount].ToF_position[row], feature[row], flattenedPoints, &numPoints);
         attr->kdtree_lastframe[row] = buildKDTree(flattenedPoints, numPoints, 0); // 对每一行数据单独构建KD-Tree
     }

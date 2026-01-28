@@ -6,21 +6,19 @@
 
 
 // 初始化EKF
-void init_ekf(EKF_attr *attr, IMUDataFrame *IMUdata) {
-    if (attr == NULL) return;
-    
+void init_ekf(EKF_attr *attr, Pos *init_pos) {
     // 初始化状态
-    attr->pos.x = IMUdata->x;
-    attr->pos.y = IMUdata->y;
-    attr->pos.z = IMUdata->z;
-    attr->pos.roll = IMUdata->roll;
-    attr->pos.pitch = IMUdata->pitch;
-    attr->pos.yaw = IMUdata->yaw;
+    attr->pos.x = init_pos->x;
+    attr->pos.y = init_pos->y;
+    attr->pos.z = init_pos->z;
+    attr->pos.roll = init_pos->roll;
+    attr->pos.pitch = init_pos->pitch;
+    attr->pos.yaw = init_pos->yaw;
     
     // 初始化协方差
     for (int i = 0; i < 6; i++) {
         for (int j = 0; j < 6; j++) {
-            attr->P[i][j] = (i == j) ? 1 : 0.0;    // 初始不确定性可调参
+            attr->P[i][j] = (i == j) ? 1.0 : 0.0;    // 初始不确定性可调参
         }
     }
     
@@ -52,16 +50,21 @@ void init_ekf(EKF_attr *attr, IMUDataFrame *IMUdata) {
 }
 
 // 预测步骤
-void ekf_predict(EKF_attr *attr, IMUDataFrame_diff *IMUdata_diff) {
-    if (attr == NULL || IMUdata_diff == NULL) return;
+void ekf_predict(EKF_attr *attr, Pos *last_pos, Pos *pos, int time_diff) {
+    double dx = pos->x - last_pos->x;
+    double dy = pos->y - last_pos->y;
+    double dz = pos->z - last_pos->z;
+    double droll = pos->roll - last_pos->roll;
+    double dpitch = pos->pitch - last_pos->pitch;
+    double dyaw = pos->yaw - last_pos->yaw;
     
     // 状态预测：x_k = x_{k-1} + u_k
-    attr->pos.x += IMUdata_diff->dx;
-    attr->pos.y += IMUdata_diff->dy;
-    attr->pos.z += IMUdata_diff->dz;
-    attr->pos.roll += IMUdata_diff->droll;
-    attr->pos.pitch += IMUdata_diff->dpitch;
-    attr->pos.yaw += IMUdata_diff->dyaw;
+    attr->pos.x += dx;
+    attr->pos.y += dy;
+    attr->pos.z += dz;
+    attr->pos.roll += droll;
+    attr->pos.pitch += dpitch;
+    attr->pos.yaw += dyaw;
     
     // 协方差预测：P_k = F * P_{k-1} * F^T + Q
     // 由于状态转移是线性的（x_k = x_{k-1} + u_k），雅可比矩阵F是单位矩阵
@@ -75,8 +78,6 @@ void ekf_predict(EKF_attr *attr, IMUDataFrame_diff *IMUdata_diff) {
 
 // 修正步骤
 void ekf_modify(EKF_attr *attr, Pos *LiDAR_measurement_pos) {
-    if (attr == NULL || LiDAR_measurement_pos == NULL) return;
-    
     // 测量矩阵H是单位矩阵
     // 计算卡尔曼增益：K = P * H^T * (H * P * H^T + R)^(-1)
     // 由于H是单位矩阵，简化为：K = P * (P + R)^(-1)
@@ -84,7 +85,7 @@ void ekf_modify(EKF_attr *attr, Pos *LiDAR_measurement_pos) {
 
     double K[6][6] = {0};
     for (int i = 0; i < 6; i++) {
-        K[i][i] = attr->P[i][i] / (attr->P[i][i] + attr->Q[i][i]);
+        K[i][i] = attr->P[i][i] / (attr->P[i][i] + attr->R[i][i]);
     }
     
     // 计算新息 y = z - H * x = z - x
@@ -101,8 +102,8 @@ void ekf_modify(EKF_attr *attr, Pos *LiDAR_measurement_pos) {
     attr->pos.y += K[1][1] * y[1];
     attr->pos.z += K[2][2] * y[2];
     attr->pos.roll += K[3][3] * y[3];
-    attr->pos.pitch += attr->pos.pitch + K[4][4] * y[4];
-    attr->pos.yaw += attr->pos.yaw + K[5][5] * y[5];
+    attr->pos.pitch += K[4][4] * y[4];
+    attr->pos.yaw += K[5][5] * y[5];
     
     // 协方差更新：P = (I - K * H) * P = (I - K) * P    
     for (int i = 0; i < 6; i++) {

@@ -1,120 +1,112 @@
-
-
-#include <stddef.h>
+#include "ekf.h"
+#include "matrix.h"
+#include <math.h>
 #include <stdbool.h>
-#include "pointcloud.h"
+#include <string.h>
 
 
-
-// 上一帧IMU位姿(未修正)，用于计算帧间IMU位姿变换
-IMUDataFrame last_IMUDataFrame;
-
-// 上一帧融合位姿
-IMUDataFrame last_pose;
-
-// 状态协方差矩阵
-double P[6][6] = {0};
-
-// 过程噪声协方差矩阵
-double Q[6][6] = {0};
-
-// 观测噪声协方差矩阵
-double R[6][6] = {0};
-
-// 卡尔曼增益矩阵
-double K[6][6] = {0};
-
-// 是否是刚开始
-bool if_first = true;
-
-// 第一帧：初始化EKF参数
-void init_EKF() {
-    // 状态协方差
-    for (int i = 0; i < 6; ++i) P[i][i] = 1;
-    // 位置噪声 (x,y,z)
-    Q[0][0] = 0.1; // x噪声方差
-    Q[1][1] = 0.1; // y噪声方差  
-    Q[2][2] = 0.1; // z噪声方差
-    // 姿态噪声 (roll, pitch, yaw)
-    Q[3][3] = 0.05; // roll噪声方差
-    Q[4][4] = 0.05; // pitch噪声方差
-    Q[5][5] = 0.05; // yaw噪声方差
-
-    // 观测噪声(我感觉配准不是很准，所以观测噪声调整的比较大)
-    for (int i = 0; i < 6; ++i) R[i][i] = 0.3;
-}
-
-
-// 根据IMU数据进行位姿预测
-IMUDataFrame predict_pose(IMUDataFrame pose) {
-    // 检查一下last_pose和last_IMUDataFrame时间戳是否对齐
-    if (last_pose.IMU_timestamps != last_IMUDataFrame.IMU_timestamps) return pose;
-    IMUDataFrame result;
-    // 预测位姿=精确位姿 + Δ(IMU预积分位姿)
-    result.pitch = last_pose.pitch + pose.pitch - last_IMUDataFrame.pitch;
-    result.roll = last_pose.roll + pose.roll - last_IMUDataFrame.roll;
-    result.yaw = last_pose.yaw + pose.yaw - last_IMUDataFrame.yaw;
-    result.x = last_pose.x + pose.x - last_IMUDataFrame.x;
-    result.y = last_pose.y + pose.y - last_IMUDataFrame.y;
-    result.z = last_pose.z + pose.z - last_IMUDataFrame.z;
-    return result;
-}
-
-// 先验估计协方差矩阵
-void predict_cov(IMUDataFrame pose) {
-    // 临时调整过程噪声（基于时间间隔，测量时间间隔比较大的话噪声要等比例提高）
-    double dt = pose.IMU_timestamps - last_pose.IMU_timestamps;
-    if(dt <= 0) dt = 0.1;
-    double Q_adjusted[6][6] = {0};
-    for(int i = 0; i < 6; i++) Q_adjusted[i][i] = Q[i][i] * dt;
+// 初始化EKF
+void init_ekf(EKF_attr *attr, Pos *init_pos) {
+    // 初始化状态
+    attr->pos.x = init_pos->x;
+    attr->pos.y = init_pos->y;
+    attr->pos.z = init_pos->z;
+    attr->pos.roll = init_pos->roll;
+    attr->pos.pitch = init_pos->pitch;
+    attr->pos.yaw = init_pos->yaw;
     
-    // 更新协方差
-    for (int i = 0; i < 6; i++) P[i][i] = P[i][i] + Q[i][i];
-}
-
-// 计算卡尔曼增益
-void cal_K() {
-    for (int i = 0; i < 6; i++) K[i][i] = P[i][i] / (P[i][i] + R[i][i]);
-}
-
-// 后验估计位姿状态
-IMUDataFrame modify_pose(IMUDataFrame IMU_pose, IMUDataFrame LiDAR_pose) {
-    IMUDataFrame result;
-    result.IMU_timestamps = IMU_pose.IMU_timestamps;
-    result.x = IMU_pose.x + K[0][0] * (LiDAR_pose.x - IMU_pose.x);
-    result.y = IMU_pose.y + K[1][1] * (LiDAR_pose.y - IMU_pose.y);
-    result.z = IMU_pose.z + K[2][2] * (LiDAR_pose.z - IMU_pose.z);
-    result.roll = IMU_pose.roll + K[3][3] * (LiDAR_pose.roll - IMU_pose.roll);
-    result.pitch = IMU_pose.pitch + K[4][4] * (LiDAR_pose.pitch - IMU_pose.pitch);
-    result.yaw = IMU_pose.yaw + K[5][5] * (LiDAR_pose.yaw - IMU_pose.yaw);
-    return result;
-}
-
-// 后验估计协方差
-void modify_cov() {
-    for (int i = 0; i < 6; i++) P[i][i] = (1 - K[i][i]) * P[i][i];
-}
-
-
-// 根据输入的当前帧IMU位姿、当前帧点云配准位姿、上一时刻精确位姿，输出EKF估计的位姿
-IMUDataFrame EKF(IMUDataFrame pose, IMUDataFrame lidar_pose) {
-    IMUDataFrame current_ekf_pose;  // 存储当前帧融合结果
-    
-    if (if_first) {
-        // 第一帧处理：初始化EKF参数
-        init_EKF();
-        current_ekf_pose = pose;  // 第一帧无历史数据，用观测值初始化
-        last_IMUDataFrame = pose;       // 记录第一帧IMU原始位姿（用于下一帧预积分）
-        if_first = false;               // 标记初始化完成
-    } else {
-        IMUDataFrame predict_pose_result = predict_pose(pose);
-        predict_cov(pose);
-        cal_K();
-        current_ekf_pose = modify_pose(predict_pose_result, lidar_pose);
-        modify_cov();
-        last_IMUDataFrame = pose;
+    // 初始化协方差
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 6; j++) {
+            attr->P[i][j] = (i == j) ? 1.0 : 0.0;    // 初始不确定性可调参
+        }
     }
     
-    last_pose = current_ekf_pose;
-    return current_ekf_pose;
+    // 初始化过程噪声
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 6; j++) {
+            attr->Q[i][j] = 0.0;
+        }
+    }
+    attr->Q[0][0] = 0.1;    // x 过程噪声
+    attr->Q[1][1] = 0.1;    // y 过程噪声
+    attr->Q[2][2] = 0.1;    // z 过程噪声
+    attr->Q[3][3] = 0.05;   // roll 过程噪声
+    attr->Q[4][4] = 0.05;   // pitch 过程噪声
+    attr->Q[5][5] = 0.05;   // yaw 过程噪声
+    
+    // 初始化观测噪声
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 6; j++) {
+            attr->R[i][j] = 0.0;
+        }
+    }
+    attr->R[0][0] = 0.05;   // x 观测噪声
+    attr->R[1][1] = 0.05;   // y 观测噪声
+    attr->R[2][2] = 0.05;   // z 观测噪声
+    attr->R[3][3] = 0.1;   // roll 观测噪声
+    attr->R[4][4] = 0.1;   // pitch 观测噪声
+    attr->R[5][5] = 0.1;   // yaw 观测噪声
+}
+
+// 预测步骤
+void ekf_predict(EKF_attr *attr, Pos *last_pos, Pos *pos, int time_diff) {
+    double dx = pos->x - last_pos->x;
+    double dy = pos->y - last_pos->y;
+    double dz = pos->z - last_pos->z;
+    double droll = pos->roll - last_pos->roll;
+    double dpitch = pos->pitch - last_pos->pitch;
+    double dyaw = pos->yaw - last_pos->yaw;
+    
+    // 状态预测：x_k = x_{k-1} + u_k
+    attr->pos.x += dx;
+    attr->pos.y += dy;
+    attr->pos.z += dz;
+    attr->pos.roll += droll;
+    attr->pos.pitch += dpitch;
+    attr->pos.yaw += dyaw;
+    
+    // 协方差预测：P_k = F * P_{k-1} * F^T + Q
+    // 由于状态转移是线性的（x_k = x_{k-1} + u_k），雅可比矩阵F是单位矩阵
+    // 所以 P_k = P_{k-1} + Q
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 6; j++) {
+            attr->P[i][j] += attr->Q[i][j];
+        }
+    }
+}
+
+// 修正步骤
+void ekf_modify(EKF_attr *attr, Pos *LiDAR_measurement_pos) {
+    // 测量矩阵H是单位矩阵
+    // 计算卡尔曼增益：K = P * H^T * (H * P * H^T + R)^(-1)
+    // 由于H是单位矩阵，简化为：K = P * (P + R)^(-1)
+    // 我们先前假定了P和R和Q都是对角矩阵，即六维测量独立，便于计算
+
+    double K[6][6] = {0};
+    for (int i = 0; i < 6; i++) {
+        K[i][i] = attr->P[i][i] / (attr->P[i][i] + attr->R[i][i]);
+    }
+    
+    // 计算新息 y = z - H * x = z - x
+    double y[6];
+    y[0] = LiDAR_measurement_pos->x - attr->pos.x;
+    y[1] = LiDAR_measurement_pos->y - attr->pos.y;
+    y[2] = LiDAR_measurement_pos->z - attr->pos.z;
+    y[3] = LiDAR_measurement_pos->roll - attr->pos.roll;
+    y[4] = LiDAR_measurement_pos->pitch - attr->pos.pitch;
+    y[5] = LiDAR_measurement_pos->yaw - attr->pos.yaw;
+    
+    // 状态更新：x = x + K * y
+    attr->pos.x += K[0][0] * y[0];
+    attr->pos.y += K[1][1] * y[1];
+    attr->pos.z += K[2][2] * y[2];
+    attr->pos.roll += K[3][3] * y[3];
+    attr->pos.pitch += K[4][4] * y[4];
+    attr->pos.yaw += K[5][5] * y[5];
+    
+    // 协方差更新：P = (I - K * H) * P = (I - K) * P    
+    for (int i = 0; i < 6; i++) {
+        attr->P[i][i] = (1 - K[i][i]) * attr->P[i][i];
+    }
 }

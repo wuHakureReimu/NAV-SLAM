@@ -5,61 +5,39 @@ project(NAV-SLAM C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
+# 设置编译器选项
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -O2")
 
-# -------------------------------
+# 包含项目头文件目录
+include_directories(headers utils)
+
+# 查找数学库（通常不需要显式查找，但这里显式声明）
+find_package(Threads REQUIRED)
+
 # 查找jansson库
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JANSSON REQUIRED jansson)
-if(NOT JANSSON_FOUND)
-    message(FATAL_ERROR "未找到 jansson 库！请安装：\nDebian/Ubuntu: sudo apt install libjansson-dev\nmacOS: brew install jansson\nCentOS/RHEL: yum install jansson-devel")
-endif()
 
-# -------------------------------
-# 添加 pointcloud 库
-add_library(pointcloud STATIC
-    utils/pointcloud.h
-    utils/pointcloud.c
-)
-target_include_directories(pointcloud
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/utils
-)
 
-# -------------------------------
-# 添加 kdtree 静态库
-add_library(kdtree STATIC
-    utils/kdtree.c
-    utils/kdtree.h
-)
-target_include_directories(kdtree
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/utils
-)
-
-# kdtree 依赖 pointcloud
-target_link_libraries(kdtree
-    PUBLIC
-        pointcloud
-)
-
-# -------------------------------
-# main文件
+# 添加可执行文件
 add_executable(main.exe
     src/main.c
+    src/ekf.c
+    src/slam.c
+    utils/kdtree.c
+    utils/matrix.c
+    utils/pointcloud.c
 )
 
-target_include_directories(main.exe
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/utils
-        ${JANSSON_INCLUDE_DIRS}
+# 添加包含目录
+target_include_directories(main.exe PRIVATE 
+    headers
+    utils
+    ${JANSSON_INCLUDE_DIRS}
 )
 
 # 链接库
-target_link_libraries(main.exe
-    PRIVATE
-        kdtree
-        pointcloud
-        ${JANSSON_LIBRARIES}
-        m
+target_link_libraries(main.exe PRIVATE
+    m  # 数学库
+    ${JANSSON_LIBRARIES}
 )

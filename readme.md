@@ -5,7 +5,7 @@
 ## 运行
 
 ```
-cd build
+mkdir build & cd build
 cp ../dataset/xxx.json .
 cmake ..
 ./main.exe

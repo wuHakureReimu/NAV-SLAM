@@ -10,7 +10,7 @@
 #define FILE_PRINT
 
 // 读取Lidar数据函数
-void LidarProcessData(const char *filename, LidarDataFrame *lidarData, size_t *lidarCount)
+void LidarProcessData(const char *filename, L5_LidarDataFrame *lidarData, size_t *lidarCount)
 {
     FILE *file = fopen(filename, "r");
     if (file == NULL)
@@ -71,6 +71,60 @@ void LidarProcessData(const char *filename, LidarDataFrame *lidarData, size_t *l
     }
 
     json_decref(root);
+}
+
+// 读取L9 Lidar数据函数（csv文件）
+void L9_LidarProcessData(const char *filename, PointCloud *lidarData, size_t *lidarCount)
+{
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        *lidarCount = 0;
+        return;
+    }
+
+    // 跳过 CSV 表头行
+    char header[256];
+    if (!fgets(header, sizeof(header), fp)) {
+        fclose(fp);
+        *lidarCount = 0;
+        return;
+    }
+
+    int frame, row, col, conf;
+    double x, y, z;
+    int currentFrame = -1;     // 当前正在处理的帧号
+    *lidarCount = 0;           // 初始化为当前帧索引（第一帧将从 0 开始填充）
+
+    // 逐行解析 CSV
+    while (fscanf(fp, "%d,%d,%d,%lf,%lf,%lf,%d", &frame, &row, &col, &x, &y, &z, &conf) == 7) {
+        if (row < 0 || row >= MAX_ROWS || col < 0 || col > MAX_COLS) {
+            continue;   // 忽略无效数据
+        }
+
+        // 检测到新的一帧
+        if (frame != currentFrame) {
+            if (currentFrame != -1) {
+                (*lidarCount)++;      // 前一帧已完整，移动到下一帧
+            }
+            currentFrame = frame;
+            // 将帧号作为时间戳存入
+            lidarData[*lidarCount].ToF_timestamps = frame;
+        }
+
+        // 将点数据存入对应行列位置
+        lidarData[*lidarCount].ToF_position[row][col].x = x;
+        lidarData[*lidarCount].ToF_position[row][col].y = y;
+        lidarData[*lidarCount].ToF_position[row][col].z = z;
+    }
+
+    // 处理最后一帧：如果至少有一帧，则帧数为当前索引+1；否则为0
+    if (currentFrame != -1) {
+        *lidarCount = *lidarCount + 1;
+    } else {
+        *lidarCount = 0;
+    }
+
+    fclose(fp);
 }
 
 // 读取IMU数据函数
@@ -136,18 +190,16 @@ Pos IMUDataFrame2Pos(IMUDataFrame *imuData) {
     return result;
 }
 
-// LiDAR数据帧转Pointcloud
-void LidarDataFrame2PointCloud(LidarDataFrame *lidarData, PointCloud *lidarPointCloud) {
+// L5 LiDAR数据帧转Pointcloud
+void LidarDataFrame2PointCloud(L5_LidarDataFrame *lidarData, PointCloud *lidarPointCloud) {
     lidarPointCloud->ToF_timestamps = lidarData->ToF_timestamps;
     convertToPointCloud(lidarData->ToF_distances, lidarPointCloud->ToF_position);
 }
 
-
-// 运行逻辑
-int main()
-{
+// L5 + IMU 运行逻辑测试
+void L5_IMU_data_handler() {
     // 输入数据格式目前是已经做了时间同步的
-    LidarDataFrame lidarData[100];        // LiDAR数据帧
+    L5_LidarDataFrame lidarData[100];        // LiDAR数据帧
     IMUDataFrame imuData[100];            // IMU位姿预测（硬件已做预积分）
     size_t lidarCount = 0, imuCount = 0;
     LidarProcessData("parsed_data.json", lidarData, &lidarCount); // 读取LiDAR数据
@@ -303,6 +355,126 @@ int main()
     fclose(csvFile);
     printf("数据已保存到 point_cloud_data.csv\n");
 #endif
+}
 
+// L9 运行逻辑测试
+void L9_data_handler() {
+    PointCloud lidarData[10];        // L9_LiDAR数据帧
+    size_t lidarCount = 0;
+    L9_LidarProcessData("parsed_data.csv", lidarData, &lidarCount); // 读取LiDAR数据
+
+#ifdef FILE_PRINT
+    // 打开CSV文件用于写入
+    FILE *csvFile = fopen("point_cloud_data.csv", "w");
+    if (csvFile == NULL)
+    {
+        perror("无法打开CSV文件");
+        return 1;
+    }
+
+    fprintf(csvFile, "Timestamp,Row,Col,x,y,z,distance,IMU_x,IMU_y,IMU_z,IMU_roll,IMU_pitch,IMU_yaw,LiDAR_x,LiDAR_y,LiDAR_z,LiDAR_roll,LiDAR_pitch,LiDAR_yaw,EKF_x,EKF_y,EKF_z,EKF_roll,EKF_pitch,EKF_yaw\n");
+#endif
+
+    // 用第一帧数据，初始化必要的参数
+    Pos pos; pos.roll = pos.pitch = pos.yaw = pos.x = pos.y = pos.z = 0;
+    SLAM_attr slamattr;
+    init_slam(&slamattr, pos, lidarData);
+
+    #ifdef DEBUG_PRINT
+    printf("\n");
+    printf("framecount: %d \n", slamattr.frameCount);
+    printKDTree(slamattr.kdtree_lastframe[0], 0);
+    #endif
+    #ifdef FILE_PRINT
+        for (int row = 0; row < MAX_ROWS; ++row) {
+            for (int col = 0; col < MAX_COLS; ++col) {
+                // 输出到CSV文件
+                fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                        lidarData[0].ToF_timestamps,
+                        row, col,
+                        slamattr.globalPointCloud[0].ToF_position[row][col].x,
+                        slamattr.globalPointCloud[0].ToF_position[row][col].y,
+                        slamattr.globalPointCloud[0].ToF_position[row][col].z,
+                        0,      // distance
+                        0,      // IMU原始x坐标
+                        0,      // IMU原始y坐标
+                        0,      // IMU原始z坐标
+                        0,   // IMU原始roll
+                        0,  // IMU原始pitch
+                        0,    // IMU原始yaw
+                        pos.x,      // 点云配准得到的x坐标（第一帧用IMU数据代替）
+                        pos.y,      // 点云配准得到的y坐标（第一帧用IMU数据代替）
+                        pos.z,      // 点云配准得到的z坐标（第一帧用IMU数据代替）
+                        pos.roll,   // 点云配准得到的姿态（第一帧用IMU数据代替）
+                        pos.pitch,  // 点云配准得到的姿态（第一帧用IMU数据代替）
+                        pos.yaw,    // 点云配准得到的姿态（第一帧用IMU数据代替）
+                        0,    // EKF融合x坐标
+                        0,    // EKF融合y坐标
+                        0,    // EKF融合z坐标
+                        0,        // EKF融合roll
+                        0,       // EKF融合pitch
+                        0          // EKF融合yaw
+                    );
+            }
+        }
+    #endif
+
+    // 之后帧进行SLAM
+    Pos last_pos = pos;
+    for (size_t i = 1; i < lidarCount; i++) {
+        // slam定位
+        Pos pos_measure = slam_localization(&slamattr, &lidarData[i], last_pos, last_pos);
+
+        // slam建图
+        slam_mapping(&slamattr, pos_measure, &lidarData[i]);
+        last_pos = pos_measure;
+
+        #ifdef FILE_PRINT
+        for (int row = 0; row < MAX_ROWS; ++row) {
+            for (int col = 0; col < MAX_COLS; ++col) {
+                // 输出到CSV文件
+                fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                        lidarData[i].ToF_timestamps,
+                        row, col,
+                        slamattr.globalPointCloud[i].ToF_position[row][col].x,
+                        slamattr.globalPointCloud[i].ToF_position[row][col].y,
+                        slamattr.globalPointCloud[i].ToF_position[row][col].z,
+                        0,
+                        0,      // IMU原始x坐标
+                        0,      // IMU原始y坐标
+                        0,      // IMU原始z坐标
+                        0,   // IMU原始roll
+                        0,  // IMU原始pitch
+                        0,    // IMU原始yaw
+                        pos_measure.x,      // 点云配准得到的x坐标
+                        pos_measure.y,      // 点云配准得到的y坐标
+                        pos_measure.z,      // 点云配准得到的z坐标
+                        pos_measure.roll,   // 点云配准得到的姿态
+                        pos_measure.pitch,  // 点云配准得到的姿态
+                        pos_measure.yaw,    // 点云配准得到的姿态
+                        0,    // EKF融合x坐标
+                        0,    // EKF融合y坐标
+                        0,    // EKF融合z坐标
+                        0,        // EKF融合roll
+                        0,       // EKF融合pitch
+                        0          // EKF融合yaw
+                    );
+            }
+        }
+        #endif
+    }
+
+#ifdef FILE_PRINT
+    fclose(csvFile);
+    printf("数据已保存到 point_cloud_data.csv\n");
+#endif
+}
+
+
+
+// 运行逻辑
+int main()
+{
+    L9_data_handler();
     return 0;
 }

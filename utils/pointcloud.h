@@ -2,15 +2,19 @@
 #define POINTCLOUD_H
 
 // 定义Lidar数据帧结构
-#define MAX_ROWS 8
-#define MAX_COLS 8
+#define L5_MAX_ROWS 8
+#define L5_MAX_COLS 8
+#define L9_MAX_ROWS 54
+#define L9_MAX_COLS 42
+#define MAX_ROWS L9_MAX_ROWS   // 在此处配置雷达分辨率
+#define MAX_COLS L9_MAX_COLS
 
-// 雷达帧
+// L5雷达帧
 typedef struct
 {
     int ToF_timestamps;                    // 时间戳
     int ToF_distances[MAX_ROWS][MAX_COLS]; // 距离矩阵，单位mm
-} LidarDataFrame;
+} L5_LidarDataFrame;
 
 // IMU数据帧
 typedef struct

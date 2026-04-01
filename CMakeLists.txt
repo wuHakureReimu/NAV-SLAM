@@ -25,7 +25,7 @@ add_executable(main.exe
     src/ekf.c
     src/slam.c
     utils/kdtree.c
-    utils/matrix.c
+    # utils/matrix.c
     utils/pointcloud.c
 )
 

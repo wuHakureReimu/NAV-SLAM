@@ -150,3 +150,69 @@ void nearestNeighborSearch(KDNode *root, Point *target, Point *result, double *b
         nearestNeighborSearch(oppositeBranch, target, result, bestDist, depth + 1);
     }
 }
+static void nearestNeighborSearch_2(KDNode *root, Point *target, Point *bestPoint1, double *bestDist1, Point *bestPoint2, double *bestDist2, int depth)
+{
+    if (root == NULL)
+        return;
+
+    double dx = root->point.x - target->x;
+    double dy = root->point.y - target->y;
+    double dz = root->point.z - target->z;
+    double dist = sqrt(dx * dx + dy * dy + dz * dz);
+
+    // 更新第一近邻和第二近邻
+    if (dist < *bestDist1)
+    {
+        *bestDist2 = *bestDist1;
+        *bestPoint2 = *bestPoint1;
+
+        *bestDist1 = dist;
+        *bestPoint1 = root->point;
+    }
+    else if (dist < *bestDist2)
+    {
+        // 避免第二近邻和第一近邻是同一个点
+        if (!(root->point.x == bestPoint1->x &&
+              root->point.y == bestPoint1->y &&
+              root->point.z == bestPoint1->z))
+        {
+            *bestDist2 = dist;
+            *bestPoint2 = root->point;
+        }
+    }
+
+    int axis = depth % 3;
+    double diff;
+    if (axis == 0)
+        diff = target->x - root->point.x;
+    else if (axis == 1)
+        diff = target->y - root->point.y;
+    else
+        diff = target->z - root->point.z;
+
+    KDNode *nearChild = (diff < 0) ? root->left : root->right;
+    KDNode *farChild = (diff < 0) ? root->right : root->left;
+
+    nearestNeighborSearch_2(nearChild, target, bestPoint1, bestDist1, bestPoint2, bestDist2, depth + 1);
+    if (fabs(diff) < *bestDist2)
+    {
+        nearestNeighborSearch_2(farChild, target, bestPoint1, bestDist1, bestPoint2, bestDist2, depth + 1);
+    }
+}
+void nearestTwoNeighborSearch(
+    KDNode *root,
+    Point *target,
+    Point *bestPoint1,
+    double *bestDist1,
+    Point *bestPoint2,
+    double *bestDist2,
+    int depth)
+{
+    *bestDist1 = INFINITY;
+    *bestDist2 = INFINITY;
+
+    bestPoint1->x = bestPoint1->y = bestPoint1->z = 0.0;
+    bestPoint2->x = bestPoint2->y = bestPoint2->z = 0.0;
+
+    nearestNeighborSearch_2(root, target, bestPoint1, bestDist1, bestPoint2, bestDist2, depth);
+}

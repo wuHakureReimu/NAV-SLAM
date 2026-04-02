@@ -9,11 +9,20 @@
 // SLAM算法维护的属性
 typedef struct
 {
-    PointCloud globalPointCloud[100];   // 全局点云地图
-    int frameCount;                     // 用这玩意和上面的数组形成一个丐版vector
-    KDNode* kdtree_lastframe[MAX_ROWS];  // 存储上一帧点云的特征点KD-tree，每行一棵树，雷达坐标系
+    PointCloud globalPointCloud[100];         // 全局点云地图
+    int frameCount;                           // 用这玩意和上面的数组形成一个丐版vector
+    KDNode *kdtree_edge_lastframe[MAX_ROWS];  // 存储上一帧点云的特征点KD-tree，每行一棵树，雷达坐标系
+    KDNode *kdtree_plane_lastframe[MAX_ROWS]; // 存储当前帧点云的特征点KD-tree，每行一棵树，雷达坐标系
 } SLAM_attr;
 
+typedef struct
+{
+    Point edge_points[MAX_ROWS * MAX_COLS];
+    int edge_count;
+
+    Point plane_points[MAX_ROWS * MAX_COLS];
+    int plane_count;
+} FeatureCloud;
 
 // 用第一帧数据初始化
 void init_slam(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud);

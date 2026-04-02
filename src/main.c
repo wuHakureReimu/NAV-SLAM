@@ -77,14 +77,16 @@ void LidarProcessData(const char *filename, L5_LidarDataFrame *lidarData, size_t
 void L9_LidarProcessData(const char *filename, PointCloud *lidarData, size_t *lidarCount)
 {
     FILE *fp = fopen(filename, "r");
-    if (!fp) {
+    if (!fp)
+    {
         *lidarCount = 0;
         return;
     }
 
     // 跳过 CSV 表头行
     char header[256];
-    if (!fgets(header, sizeof(header), fp)) {
+    if (!fgets(header, sizeof(header), fp))
+    {
         fclose(fp);
         *lidarCount = 0;
         return;
@@ -92,19 +94,23 @@ void L9_LidarProcessData(const char *filename, PointCloud *lidarData, size_t *li
 
     int frame, row, col, conf;
     double x, y, z;
-    int currentFrame = -1;     // 当前正在处理的帧号
-    *lidarCount = 0;           // 初始化为当前帧索引（第一帧将从 0 开始填充）
+    int currentFrame = -1; // 当前正在处理的帧号
+    *lidarCount = 0;       // 初始化为当前帧索引（第一帧将从 0 开始填充）
 
     // 逐行解析 CSV
-    while (fscanf(fp, "%d,%d,%d,%lf,%lf,%lf,%d", &frame, &row, &col, &x, &y, &z, &conf) == 7) {
-        if (row < 0 || row >= MAX_ROWS || col < 0 || col > MAX_COLS) {
-            continue;   // 忽略无效数据
+    while (fscanf(fp, "%d,%d,%d,%lf,%lf,%lf,%d", &frame, &row, &col, &x, &y, &z, &conf) == 7)
+    {
+        if (row < 0 || row >= MAX_ROWS || col < 0 || col > MAX_COLS)
+        {
+            continue; // 忽略无效数据
         }
 
         // 检测到新的一帧
-        if (frame != currentFrame) {
-            if (currentFrame != -1) {
-                (*lidarCount)++;      // 前一帧已完整，移动到下一帧
+        if (frame != currentFrame)
+        {
+            if (currentFrame != -1)
+            {
+                (*lidarCount)++; // 前一帧已完整，移动到下一帧
             }
             currentFrame = frame;
             // 将帧号作为时间戳存入
@@ -118,9 +124,12 @@ void L9_LidarProcessData(const char *filename, PointCloud *lidarData, size_t *li
     }
 
     // 处理最后一帧：如果至少有一帧，则帧数为当前索引+1；否则为0
-    if (currentFrame != -1) {
+    if (currentFrame != -1)
+    {
         *lidarCount = *lidarCount + 1;
-    } else {
+    }
+    else
+    {
         *lidarCount = 0;
     }
 
@@ -185,25 +194,28 @@ void IMUProcessData(const char *filename, IMUDataFrame *imuData, size_t *imuCoun
 }
 
 // IMU数据帧转Pos
-Pos IMUDataFrame2Pos(IMUDataFrame *imuData) {
+Pos IMUDataFrame2Pos(IMUDataFrame *imuData)
+{
     Pos result = {imuData->x * 1000, imuData->y * 1000, imuData->z * 1000, imuData->roll, imuData->pitch, imuData->yaw};
     return result;
 }
 
 // L5 LiDAR数据帧转Pointcloud
-void LidarDataFrame2PointCloud(L5_LidarDataFrame *lidarData, PointCloud *lidarPointCloud) {
+void LidarDataFrame2PointCloud(L5_LidarDataFrame *lidarData, PointCloud *lidarPointCloud)
+{
     lidarPointCloud->ToF_timestamps = lidarData->ToF_timestamps;
     convertToPointCloud(lidarData->ToF_distances, lidarPointCloud->ToF_position);
 }
 
 // L5 + IMU 运行逻辑测试
-void L5_IMU_data_handler() {
+void L5_IMU_data_handler()
+{
     // 输入数据格式目前是已经做了时间同步的
-    L5_LidarDataFrame lidarData[100];        // LiDAR数据帧
-    IMUDataFrame imuData[100];            // IMU位姿预测（硬件已做预积分）
+    L5_LidarDataFrame lidarData[100]; // LiDAR数据帧
+    IMUDataFrame imuData[100];        // IMU位姿预测（硬件已做预积分）
     size_t lidarCount = 0, imuCount = 0;
     LidarProcessData("parsed_data.json", lidarData, &lidarCount); // 读取LiDAR数据
-    IMUProcessData("parsed_data.json", imuData, &imuCount); // 读取IMU数据
+    IMUProcessData("parsed_data.json", imuData, &imuCount);       // 读取IMU数据
 
 #ifdef DEBUG_PRINT
     printf("Lidar数据:\n");
@@ -252,54 +264,57 @@ void L5_IMU_data_handler() {
     SLAM_attr slamattr;
     init_slam(&slamattr, pos, &lidarPointCloud);
 
-    #ifdef DEBUG_PRINT
+#ifdef DEBUG_PRINT
     printf("%.2f, %.2f, %.2f, %.2f, %.2f, %.2f \n", imuData[0].x, imuData[0].y, imuData[0].z, imuData[0].roll, imuData[0].pitch, imuData[0].yaw);
     printf("%.2f, %.2f, %.2f, %.2f, %.2f, %.2f \n", ekfattr.pos.x, ekfattr.pos.y, ekfattr.pos.z, ekfattr.pos.roll, ekfattr.pos.pitch, ekfattr.pos.yaw);
     printPointCloud(lidarPointCloud);
     printf("\n");
     printf("framecount: %d \n", slamattr.frameCount);
     printPointCloud(slamattr.globalPointCloud[0]);
-    printKDTree(slamattr.kdtree_lastframe[0], 0);
-    #endif
-    #ifdef FILE_PRINT
-        for (int row = 0; row < MAX_ROWS; ++row) {
-            for (int col = 0; col < MAX_COLS; ++col) {
-                // 输出到CSV文件
-                fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
-                        lidarData[0].ToF_timestamps,
-                        row, col,
-                        slamattr.globalPointCloud[0].ToF_position[row][col].x,
-                        slamattr.globalPointCloud[0].ToF_position[row][col].y,
-                        slamattr.globalPointCloud[0].ToF_position[row][col].z,
-                        lidarData[0].ToF_distances[row][col],
-                        imuData[0].x * 1000,      // IMU原始x坐标
-                        imuData[0].y * 1000,      // IMU原始y坐标
-                        imuData[0].z * 1000,      // IMU原始z坐标
-                        imuData[0].roll,   // IMU原始roll
-                        imuData[0].pitch,  // IMU原始pitch
-                        imuData[0].yaw,    // IMU原始yaw
-                        pos.x,      // 点云配准得到的x坐标（第一帧用IMU数据代替）
-                        pos.y,      // 点云配准得到的y坐标（第一帧用IMU数据代替）
-                        pos.z,      // 点云配准得到的z坐标（第一帧用IMU数据代替）
-                        pos.roll,   // 点云配准得到的姿态（第一帧用IMU数据代替）
-                        pos.pitch,  // 点云配准得到的姿态（第一帧用IMU数据代替）
-                        pos.yaw,    // 点云配准得到的姿态（第一帧用IMU数据代替）
-                        pos.x,    // EKF融合x坐标
-                        pos.y,    // EKF融合y坐标
-                        pos.z,    // EKF融合z坐标
-                        pos.roll,        // EKF融合roll
-                        pos.pitch,       // EKF融合pitch
-                        pos.yaw          // EKF融合yaw
-                    );
-            }
+    printKDTree(slamattr.kdtree_edge_lastframe[0], 0);
+#endif
+#ifdef FILE_PRINT
+    for (int row = 0; row < MAX_ROWS; ++row)
+    {
+        for (int col = 0; col < MAX_COLS; ++col)
+        {
+            // 输出到CSV文件
+            fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                    lidarData[0].ToF_timestamps,
+                    row, col,
+                    slamattr.globalPointCloud[0].ToF_position[row][col].x,
+                    slamattr.globalPointCloud[0].ToF_position[row][col].y,
+                    slamattr.globalPointCloud[0].ToF_position[row][col].z,
+                    lidarData[0].ToF_distances[row][col],
+                    imuData[0].x * 1000, // IMU原始x坐标
+                    imuData[0].y * 1000, // IMU原始y坐标
+                    imuData[0].z * 1000, // IMU原始z坐标
+                    imuData[0].roll,     // IMU原始roll
+                    imuData[0].pitch,    // IMU原始pitch
+                    imuData[0].yaw,      // IMU原始yaw
+                    pos.x,               // 点云配准得到的x坐标（第一帧用IMU数据代替）
+                    pos.y,               // 点云配准得到的y坐标（第一帧用IMU数据代替）
+                    pos.z,               // 点云配准得到的z坐标（第一帧用IMU数据代替）
+                    pos.roll,            // 点云配准得到的姿态（第一帧用IMU数据代替）
+                    pos.pitch,           // 点云配准得到的姿态（第一帧用IMU数据代替）
+                    pos.yaw,             // 点云配准得到的姿态（第一帧用IMU数据代替）
+                    pos.x,               // EKF融合x坐标
+                    pos.y,               // EKF融合y坐标
+                    pos.z,               // EKF融合z坐标
+                    pos.roll,            // EKF融合roll
+                    pos.pitch,           // EKF融合pitch
+                    pos.yaw              // EKF融合yaw
+            );
         }
-    #endif
+    }
+#endif
 
     // 之后帧进行SLAM
     Pos last_pos = pos;
-    for (size_t i = 1; i < lidarCount && i < imuCount; i++) {
+    for (size_t i = 1; i < lidarCount && i < imuCount; i++)
+    {
         // ekf预测
-        Pos last_IMUpos = IMUDataFrame2Pos(&imuData[i-1]);
+        Pos last_IMUpos = IMUDataFrame2Pos(&imuData[i - 1]);
         Pos IMUpos = IMUDataFrame2Pos(&imuData[i]);
         ekf_predict(&ekfattr, &last_IMUpos, &IMUpos, 0); // 目前不使用时间戳差分
         Pos pos_predict = ekfattr.pos;
@@ -316,9 +331,11 @@ void L5_IMU_data_handler() {
         slam_mapping(&slamattr, pos, &lidarPointCloud);
         last_pos = pos;
 
-        #ifdef FILE_PRINT
-        for (int row = 0; row < MAX_ROWS; ++row) {
-            for (int col = 0; col < MAX_COLS; ++col) {
+#ifdef FILE_PRINT
+        for (int row = 0; row < MAX_ROWS; ++row)
+        {
+            for (int col = 0; col < MAX_COLS; ++col)
+            {
                 // 输出到CSV文件
                 fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
                         lidarData[i].ToF_timestamps,
@@ -327,28 +344,28 @@ void L5_IMU_data_handler() {
                         slamattr.globalPointCloud[i].ToF_position[row][col].y,
                         slamattr.globalPointCloud[i].ToF_position[row][col].z,
                         lidarData[i].ToF_distances[row][col],
-                        imuData[i].x * 1000,      // IMU原始x坐标
-                        imuData[i].y * 1000,      // IMU原始y坐标
-                        imuData[i].z * 1000,      // IMU原始z坐标
-                        imuData[i].roll,   // IMU原始roll
-                        imuData[i].pitch,  // IMU原始pitch
-                        imuData[i].yaw,    // IMU原始yaw
-                        pos_measure.x,      // 点云配准得到的x坐标
-                        pos_measure.y,      // 点云配准得到的y坐标
-                        pos_measure.z,      // 点云配准得到的z坐标
-                        pos_measure.roll,   // 点云配准得到的姿态
-                        pos_measure.pitch,  // 点云配准得到的姿态
-                        pos_measure.yaw,    // 点云配准得到的姿态
-                        pos.x,    // EKF融合x坐标
-                        pos.y,    // EKF融合y坐标
-                        pos.z,    // EKF融合z坐标
-                        pos.roll,        // EKF融合roll
-                        pos.pitch,       // EKF融合pitch
-                        pos.yaw          // EKF融合yaw
-                    );
+                        imuData[i].x * 1000, // IMU原始x坐标
+                        imuData[i].y * 1000, // IMU原始y坐标
+                        imuData[i].z * 1000, // IMU原始z坐标
+                        imuData[i].roll,     // IMU原始roll
+                        imuData[i].pitch,    // IMU原始pitch
+                        imuData[i].yaw,      // IMU原始yaw
+                        pos_measure.x,       // 点云配准得到的x坐标
+                        pos_measure.y,       // 点云配准得到的y坐标
+                        pos_measure.z,       // 点云配准得到的z坐标
+                        pos_measure.roll,    // 点云配准得到的姿态
+                        pos_measure.pitch,   // 点云配准得到的姿态
+                        pos_measure.yaw,     // 点云配准得到的姿态
+                        pos.x,               // EKF融合x坐标
+                        pos.y,               // EKF融合y坐标
+                        pos.z,               // EKF融合z坐标
+                        pos.roll,            // EKF融合roll
+                        pos.pitch,           // EKF融合pitch
+                        pos.yaw              // EKF融合yaw
+                );
             }
         }
-        #endif
+#endif
     }
 
 #ifdef FILE_PRINT
@@ -358,8 +375,9 @@ void L5_IMU_data_handler() {
 }
 
 // L9 运行逻辑测试
-void L9_data_handler() {
-    PointCloud lidarData[10];        // L9_LiDAR数据帧
+void L9_data_handler()
+{
+    PointCloud lidarData[10]; // L9_LiDAR数据帧
     size_t lidarCount = 0;
     L9_LidarProcessData("parsed_data.csv", lidarData, &lidarCount); // 读取LiDAR数据
 
@@ -376,52 +394,56 @@ void L9_data_handler() {
 #endif
 
     // 用第一帧数据，初始化必要的参数
-    Pos pos; pos.roll = pos.pitch = pos.yaw = pos.x = pos.y = pos.z = 0;
+    Pos pos;
+    pos.roll = pos.pitch = pos.yaw = pos.x = pos.y = pos.z = 0;
     SLAM_attr slamattr;
     init_slam(&slamattr, pos, lidarData);
 
-    #ifdef DEBUG_PRINT
+#ifdef DEBUG_PRINT
     printf("\n");
     printf("framecount: %d \n", slamattr.frameCount);
-    printKDTree(slamattr.kdtree_lastframe[0], 0);
-    #endif
-    #ifdef FILE_PRINT
-        for (int row = 0; row < MAX_ROWS; ++row) {
-            for (int col = 0; col < MAX_COLS; ++col) {
-                // 输出到CSV文件
-                fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
-                        lidarData[0].ToF_timestamps,
-                        row, col,
-                        slamattr.globalPointCloud[0].ToF_position[row][col].x,
-                        slamattr.globalPointCloud[0].ToF_position[row][col].y,
-                        slamattr.globalPointCloud[0].ToF_position[row][col].z,
-                        0,      // distance
-                        0,      // IMU原始x坐标
-                        0,      // IMU原始y坐标
-                        0,      // IMU原始z坐标
-                        0,   // IMU原始roll
-                        0,  // IMU原始pitch
-                        0,    // IMU原始yaw
-                        pos.x,      // 点云配准得到的x坐标（第一帧用IMU数据代替）
-                        pos.y,      // 点云配准得到的y坐标（第一帧用IMU数据代替）
-                        pos.z,      // 点云配准得到的z坐标（第一帧用IMU数据代替）
-                        pos.roll,   // 点云配准得到的姿态（第一帧用IMU数据代替）
-                        pos.pitch,  // 点云配准得到的姿态（第一帧用IMU数据代替）
-                        pos.yaw,    // 点云配准得到的姿态（第一帧用IMU数据代替）
-                        0,    // EKF融合x坐标
-                        0,    // EKF融合y坐标
-                        0,    // EKF融合z坐标
-                        0,        // EKF融合roll
-                        0,       // EKF融合pitch
-                        0          // EKF融合yaw
-                    );
-            }
+    printKDTree(slamattr.kdtree_edge_lastframe[0], 0);
+#endif
+#ifdef FILE_PRINT
+    for (int row = 0; row < MAX_ROWS; ++row)
+    {
+        for (int col = 0; col < MAX_COLS; ++col)
+        {
+            // 输出到CSV文件
+            fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                    lidarData[0].ToF_timestamps,
+                    row, col,
+                    slamattr.globalPointCloud[0].ToF_position[row][col].x,
+                    slamattr.globalPointCloud[0].ToF_position[row][col].y,
+                    slamattr.globalPointCloud[0].ToF_position[row][col].z,
+                    0,         // distance
+                    0,         // IMU原始x坐标
+                    0,         // IMU原始y坐标
+                    0,         // IMU原始z坐标
+                    0,         // IMU原始roll
+                    0,         // IMU原始pitch
+                    0,         // IMU原始yaw
+                    pos.x,     // 点云配准得到的x坐标（第一帧用IMU数据代替）
+                    pos.y,     // 点云配准得到的y坐标（第一帧用IMU数据代替）
+                    pos.z,     // 点云配准得到的z坐标（第一帧用IMU数据代替）
+                    pos.roll,  // 点云配准得到的姿态（第一帧用IMU数据代替）
+                    pos.pitch, // 点云配准得到的姿态（第一帧用IMU数据代替）
+                    pos.yaw,   // 点云配准得到的姿态（第一帧用IMU数据代替）
+                    0,         // EKF融合x坐标
+                    0,         // EKF融合y坐标
+                    0,         // EKF融合z坐标
+                    0,         // EKF融合roll
+                    0,         // EKF融合pitch
+                    0          // EKF融合yaw
+            );
         }
-    #endif
+    }
+#endif
 
     // 之后帧进行SLAM
     Pos last_pos = pos;
-    for (size_t i = 1; i < lidarCount; i++) {
+    for (size_t i = 1; i < lidarCount; i++)
+    {
         // slam定位
         Pos pos_measure = slam_localization(&slamattr, &lidarData[i], last_pos, last_pos);
 
@@ -429,9 +451,11 @@ void L9_data_handler() {
         slam_mapping(&slamattr, pos_measure, &lidarData[i]);
         last_pos = pos_measure;
 
-        #ifdef FILE_PRINT
-        for (int row = 0; row < MAX_ROWS; ++row) {
-            for (int col = 0; col < MAX_COLS; ++col) {
+#ifdef FILE_PRINT
+        for (int row = 0; row < MAX_ROWS; ++row)
+        {
+            for (int col = 0; col < MAX_COLS; ++col)
+            {
                 // 输出到CSV文件
                 fprintf(csvFile, "%zu,%d,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
                         lidarData[i].ToF_timestamps,
@@ -440,28 +464,28 @@ void L9_data_handler() {
                         slamattr.globalPointCloud[i].ToF_position[row][col].y,
                         slamattr.globalPointCloud[i].ToF_position[row][col].z,
                         0,
-                        0,      // IMU原始x坐标
-                        0,      // IMU原始y坐标
-                        0,      // IMU原始z坐标
-                        0,   // IMU原始roll
-                        0,  // IMU原始pitch
-                        0,    // IMU原始yaw
-                        pos_measure.x,      // 点云配准得到的x坐标
-                        pos_measure.y,      // 点云配准得到的y坐标
-                        pos_measure.z,      // 点云配准得到的z坐标
-                        pos_measure.roll,   // 点云配准得到的姿态
-                        pos_measure.pitch,  // 点云配准得到的姿态
-                        pos_measure.yaw,    // 点云配准得到的姿态
-                        0,    // EKF融合x坐标
-                        0,    // EKF融合y坐标
-                        0,    // EKF融合z坐标
-                        0,        // EKF融合roll
-                        0,       // EKF融合pitch
-                        0          // EKF融合yaw
-                    );
+                        0,                 // IMU原始x坐标
+                        0,                 // IMU原始y坐标
+                        0,                 // IMU原始z坐标
+                        0,                 // IMU原始roll
+                        0,                 // IMU原始pitch
+                        0,                 // IMU原始yaw
+                        pos_measure.x,     // 点云配准得到的x坐标
+                        pos_measure.y,     // 点云配准得到的y坐标
+                        pos_measure.z,     // 点云配准得到的z坐标
+                        pos_measure.roll,  // 点云配准得到的姿态
+                        pos_measure.pitch, // 点云配准得到的姿态
+                        pos_measure.yaw,   // 点云配准得到的姿态
+                        0,                 // EKF融合x坐标
+                        0,                 // EKF融合y坐标
+                        0,                 // EKF融合z坐标
+                        0,                 // EKF融合roll
+                        0,                 // EKF融合pitch
+                        0                  // EKF融合yaw
+                );
             }
         }
-        #endif
+#endif
     }
 
 #ifdef FILE_PRINT
@@ -470,11 +494,9 @@ void L9_data_handler() {
 #endif
 }
 
-
-
 // 运行逻辑
 int main()
 {
-    L9_data_handler();
+    L5_IMU_data_handler();
     return 0;
 }

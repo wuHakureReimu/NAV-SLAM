@@ -6,6 +6,8 @@
 #include "pointcloud.h"
 
 #define DEG2RAD(x) ((x) * M_PI / 180.0)
+// #define DEBUG_PRINT
+#define FEATURE_DEBUG_PRINT
 
 // 计算曲率以及特征（仅边缘点）提取
 void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX_COLS], int plane_feature[MAX_ROWS][MAX_COLS])
@@ -146,6 +148,9 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
     printf("edge_count = %d, plane_count = %d\n", edge_count, plane_count);
 }
 
+// 从雷达点云提取特征点
+
+
 // 辅助函数：扁平化PointCloud并筛选出特征点
 void flattenPoints(Point rowPoints[MAX_COLS], int rowFeature[MAX_COLS], Point flattenedPoints[MAX_COLS], size_t *numPoints)
 {
@@ -158,14 +163,6 @@ void flattenPoints(Point rowPoints[MAX_COLS], int rowFeature[MAX_COLS], Point fl
             (*numPoints)++;
         }
     }
-
-#ifdef DEBUG_PRINT
-    printf("扁平化后的特征点：\n");
-    for (size_t i = 0; i < *numPoints; ++i)
-    {
-        printf("Point[%zu]: x = %.3f, y = %.3f, z = %.3f\n", i, flattenedPoints[i].x, flattenedPoints[i].y, flattenedPoints[i].z);
-    }
-#endif
 }
 
 // 辅助函数：计算变换，单位mm
@@ -426,6 +423,24 @@ void init_slam(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud)
     int plane_feature[MAX_ROWS][MAX_COLS] = {0};
     extract_feature(lidarPointCloud, edge_feature, plane_feature);
 
+    #ifdef FEATURE_DEBUG_PRINT
+    FILE *csvFile = fopen("feature_data.csv", "w");
+    for (int row = 0; row < MAX_ROWS; ++row) {
+        for (int col = 0; col < MAX_COLS; ++col) {
+            fprintf(csvFile, "%d,%d,%d,%lf,%lf,%lf,%d,%d\n",
+                    lidarPointCloud->ToF_timestamps,
+                    row, col,
+                    lidarPointCloud->ToF_position[row][col].x,
+                    lidarPointCloud->ToF_position[row][col].y,
+                    lidarPointCloud->ToF_position[row][col].z,
+                    edge_feature[row][col],
+                    plane_feature[row][col]
+                );
+        }
+    }
+    fclose(csvFile);
+    #endif
+
     // 初始化第0帧kdtree
     for (int row = 0; row < MAX_ROWS; ++row)
     {
@@ -461,6 +476,24 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
     // 后续优化的是围绕这个基准位姿的 6 维增量 delta
     double delta[6] = {0.0}; // [tx, ty, tz, rx, ry, rz]，其中旋转单位为 rad
 
+    #ifdef FEATURE_DEBUG_PRINT
+    FILE *csvFile = fopen("feature_data.csv", "a");
+    for (int row = 0; row < MAX_ROWS; ++row) {
+        for (int col = 0; col < MAX_COLS; ++col) {
+            fprintf(csvFile, "%d,%d,%d,%lf,%lf,%lf,%d,%d\n",
+                    lidarPointCloud->ToF_timestamps,
+                    row, col,
+                    lidarPointCloud->ToF_position[row][col].x,
+                    lidarPointCloud->ToF_position[row][col].y,
+                    lidarPointCloud->ToF_position[row][col].z,
+                    edge_feature[row][col],
+                    plane_feature[row][col]
+                );
+        }
+    }
+    fclose(csvFile);
+    #endif
+    
     // 转换当前帧点云到全局坐标系
     PointCloud transformed_pointcloud;
     for (int row = 0; row < MAX_ROWS; row++)
@@ -729,15 +762,14 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
             printf("Found %d correspondences (edge=%d, plane=%d)\n",
                    CPcount, edgeCorrCount, planeCorrCount);
 #ifdef DEBUG_PRINT
-            printf("时间戳: %d\n", imuData.IMU_timestamps);
-            printf("时间戳: %zu\n", attr->frameCount);
+            printf("时间戳: %zu\n", lidarPointCloud->ToF_timestamps);
             for (int i = 0; i < CPcount; i++)
             {
                 printf("Result %d:\n", i);
                 printf("  Original Point: (%.3f, %.3f, %.3f)\n", result[i].oriPoint.x, result[i].oriPoint.y, result[i].oriPoint.z);
                 printf("  project Point: (%.3f, %.3f, %.3f)\n", result[i].oriPoint.x - transform[0], result[i].oriPoint.y - transform[1], result[i].oriPoint.z - transform[2]);
                 printf("  Nearest Point: (%.3f, %.3f, %.3f)\n", result[i].nearestPoint.x, result[i].nearestPoint.y, result[i].nearestPoint.z);
-                printf("ErrDistance = %.3f m\n", result[i].distance);
+                printf("ErrDistance = %.3f mm\n", result[i].distance);
             }
 #endif
         }
@@ -911,11 +943,12 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
         }
 
 #ifdef DEBUG_PRINT
-        printf("时间戳: %d\n", imuData.IMU_timestamps);
+/*
         for (int i = 0; i < CPcount; i++)
         {
             printf("ErrDistance[%d] = %.3f m\n", i, ErrDistance[i]);
         }
+*/
 #endif
 
         // 阻尼 GN / LM

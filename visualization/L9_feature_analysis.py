@@ -137,8 +137,8 @@ def visualize_point_cloud(csv_data_path):
             )
         )
     )
-
     fig.show()
+    #fig.write_html("feature_animation.html")
 
 if __name__ == "__main__":
     visualize_point_cloud("./L9-dataset/L9dataset1_feature.csv")

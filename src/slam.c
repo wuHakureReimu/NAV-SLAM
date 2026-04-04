@@ -15,8 +15,9 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
     const int smooth_window = 2;         // 平滑窗口大小，可调整
     const double edge_threshold = 0.10;  // 曲率阈值
     const double plane_threshold = 0.10; // 平面点阈值
-    const int max_edge_per_row = 2;
-    const int max_plane_per_row = 2;
+    const int max_edge_per_row = 4;
+    const int max_plane_per_row = 4;
+    const int min_conf = 1; // 排除不可信点
 
     // 遍历每个点（跳过边缘的点）
     for (int i = 0; i < MAX_ROWS; i++)
@@ -24,6 +25,11 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
         double curvature[MAX_COLS] = {0.0}; // 存储每个点的曲率值
         for (int j = smooth_window; j < MAX_COLS - smooth_window; j++)
         {
+            if (lidarPointCloud->conf[i][j] < min_conf)
+            {
+                curvature[j] = 0.0;
+                continue;
+            }
             // 获取当前点
             Point current_point = lidarPointCloud->ToF_position[i][j];
 
@@ -34,6 +40,9 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
             for (int k = -smooth_window; k <= smooth_window; k++)
             {
                 if (k == 0)
+                    continue;
+
+                if (lidarPointCloud->conf[i][j + k] < min_conf)
                     continue;
 
                 Point neighbor_point = lidarPointCloud->ToF_position[i][j + k];
@@ -58,6 +67,9 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
                 {
                     if (k == 0)
                         continue;
+                    if (lidarPointCloud->conf[i][j + k] < min_conf)
+                        continue;
+
                     Point neighbor_point = lidarPointCloud->ToF_position[i][j + k];
                     double dx = current_point.x - neighbor_point.x;
                     double dy = current_point.y - neighbor_point.y;
@@ -70,16 +82,45 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
             }
             curvature[j] = curv;
         }
+
+        // 计算当前行的曲率最大值，动态调整边缘特征阈值
+        double row_max_curv = 0.0;
+        for (int j = smooth_window; j < MAX_COLS - smooth_window; j++)
+        {
+            if (curvature[j] > row_max_curv)
+                row_max_curv = curvature[j];
+        }
+        double row_edge_threshold = edge_threshold;
+        if (row_max_curv * 0.45 > row_edge_threshold)
+            row_edge_threshold = row_max_curv * 0.45;
+
         // 按照曲率排序选 edge 和 plane 特征点
         int suppressed_edge[MAX_COLS] = {0};
         for (int n = 0; n < max_edge_per_row; n++)
         {
             int best_col = -1;
-            double best_curv = edge_threshold;
+            double best_curv = row_edge_threshold;
             for (int j = smooth_window; j < MAX_COLS - smooth_window; j++)
             {
+                if (lidarPointCloud->conf[i][j] < min_conf)
+                    continue;
                 if (suppressed_edge[j])
                     continue; // 跳过已抑制的点
+                // 新增：edge 必须是局部极大值，避免仅凭 top-k 选到次优点
+                int is_local_max = 1;
+                for (int t = j - 1; t <= j + 1; t++)
+                {
+                    if (t < smooth_window || t >= MAX_COLS - smooth_window || t == j)
+                        continue;
+                    if (curvature[j] <= curvature[t])
+                    {
+                        is_local_max = 0;
+                        break;
+                    }
+                }
+                if (!is_local_max)
+                    continue;
+
                 if (curvature[j] > best_curv)
                 {
                     best_curv = curvature[j];
@@ -111,6 +152,8 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
 
             for (int j = smooth_window; j < MAX_COLS - smooth_window; j++)
             {
+                if (lidarPointCloud->conf[i][j] < min_conf)
+                    continue;
                 if (suppressed_plane[j])
                     continue;
 
@@ -149,7 +192,6 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
 }
 
 // 从雷达点云提取特征点
-
 
 // 辅助函数：扁平化PointCloud并筛选出特征点
 void flattenPoints(Point rowPoints[MAX_COLS], int rowFeature[MAX_COLS], Point flattenedPoints[MAX_COLS], size_t *numPoints)
@@ -423,11 +465,13 @@ void init_slam(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud)
     int plane_feature[MAX_ROWS][MAX_COLS] = {0};
     extract_feature(lidarPointCloud, edge_feature, plane_feature);
 
-    #ifdef FEATURE_DEBUG_PRINT
+#ifdef FEATURE_DEBUG_PRINT
     FILE *csvFile = fopen("feature_data.csv", "w");
     fprintf(csvFile, "frame,row,col,x,y,z,is_edge,is_planar\n");
-    for (int row = 0; row < MAX_ROWS; ++row) {
-        for (int col = 0; col < MAX_COLS; ++col) {
+    for (int row = 0; row < MAX_ROWS; ++row)
+    {
+        for (int col = 0; col < MAX_COLS; ++col)
+        {
             fprintf(csvFile, "%d,%d,%d,%lf,%lf,%lf,%d,%d\n",
                     lidarPointCloud->ToF_timestamps,
                     row, col,
@@ -435,13 +479,11 @@ void init_slam(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud)
                     lidarPointCloud->ToF_position[row][col].y,
                     lidarPointCloud->ToF_position[row][col].z,
                     edge_feature[row][col],
-                    plane_feature[row][col]
-                );
+                    plane_feature[row][col]);
         }
     }
     fclose(csvFile);
-    #endif
-
+#endif
     // 初始化第0帧kdtree
     for (int row = 0; row < MAX_ROWS; ++row)
     {
@@ -456,7 +498,6 @@ void init_slam(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud)
         flattenPoints(attr->globalPointCloud[attr->frameCount].ToF_position[row], plane_feature[row], planePoints, &numPlanePoints);
         attr->kdtree_plane_lastframe[row] = buildKDTree(planePoints, numPlanePoints, 0);
     }
-
     attr->frameCount++;
 }
 
@@ -477,10 +518,12 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
     // 后续优化的是围绕这个基准位姿的 6 维增量 delta
     double delta[6] = {0.0}; // [tx, ty, tz, rx, ry, rz]，其中旋转单位为 rad
 
-    #ifdef FEATURE_DEBUG_PRINT
+#ifdef FEATURE_DEBUG_PRINT
     FILE *csvFile = fopen("feature_data.csv", "a");
-    for (int row = 0; row < MAX_ROWS; ++row) {
-        for (int col = 0; col < MAX_COLS; ++col) {
+    for (int row = 0; row < MAX_ROWS; ++row)
+    {
+        for (int col = 0; col < MAX_COLS; ++col)
+        {
             fprintf(csvFile, "%d,%d,%d,%lf,%lf,%lf,%d,%d\n",
                     lidarPointCloud->ToF_timestamps,
                     row, col,
@@ -488,13 +531,12 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
                     lidarPointCloud->ToF_position[row][col].y,
                     lidarPointCloud->ToF_position[row][col].z,
                     edge_feature[row][col],
-                    plane_feature[row][col]
-                );
+                    plane_feature[row][col]);
         }
     }
     fclose(csvFile);
-    #endif
-    
+#endif
+
     // 转换当前帧点云到全局坐标系
     PointCloud transformed_pointcloud;
     for (int row = 0; row < MAX_ROWS; row++)
@@ -520,7 +562,8 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
 
     // 3. 配准
     // 外部迭代循环，设置20次迭代
-    NeighborResult result[100] = {0};
+    // 这里为了保证数组够大先设为 MAX_ROWS*MAX_COLS，后面再调
+    NeighborResult result[MAX_ROWS * MAX_COLS] = {0};
     int CPcount = 0;
 
     const int max_iterations = 30;
@@ -551,7 +594,7 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
     // plane
     double max_plane_neighbor_dist = 1000.0; // 面特征点距离阈值，单位：mm
     double min_plane_area = 800.0;           // 三点张成平面的最小面积（叉积模长），单位：mm^2
-    int plane_row_search_radius = 2;         // 搜索相邻行的范围，单位：行数
+    int plane_row_search_radius = 3;         // 搜索相邻行的范围，单位：行数
 
     for (int iter = 0; iter < 200; ++iter)
     {
@@ -775,7 +818,7 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
 #endif
         }
         // 3.2 计算误差 d
-        double ErrDistance[100];
+        double ErrDistance[MAX_ROWS * MAX_COLS] = {0.0};
 
         double H[6][6] = {0.0};
         double g[6] = {0.0};

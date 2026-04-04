@@ -4,7 +4,6 @@ from plotly.subplots import make_subplots
 
 # 读取数据
 df = pd.read_csv('point_cloud_data_with_pose.csv')
-
 # 创建带时间轴的动画可视化
 fig = go.Figure()
 

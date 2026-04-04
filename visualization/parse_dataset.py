@@ -43,6 +43,6 @@ def convert_log_to_csv(input_file, output_file):
     print(f"共处理 {len(csv_lines)-1} 个点数据（表头不计）")
 
 if __name__ == "__main__":
-    INPUT_LOG = "./L9-dataset/L9dataset2.txt"   # 你的原始日志文件
+    INPUT_LOG = "./L9-dataset/2026-04-02 010429.XDat"   # 你的原始日志文件
     OUTPUT_CSV = "./L9-dataset/parsed_data.csv" # 输出的CSV文件
     convert_log_to_csv(INPUT_LOG, OUTPUT_CSV)

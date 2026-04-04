@@ -1,7 +1,7 @@
 
 #include <stdio.h>
 #include <jansson.h>
-
+#include <string.h>
 #include "ekf.h"
 #include "slam.h"
 #include "pointcloud.h"
@@ -100,7 +100,7 @@ void L9_LidarProcessData(const char *filename, PointCloud *lidarData, size_t *li
     // 逐行解析 CSV
     while (fscanf(fp, "%d,%d,%d,%lf,%lf,%lf,%d", &frame, &row, &col, &x, &y, &z, &conf) == 7)
     {
-        if (row < 0 || row >= MAX_ROWS || col < 0 || col > MAX_COLS)
+        if (row < 0 || row >= MAX_ROWS || col < 0 || col >= MAX_COLS)
         {
             continue; // 忽略无效数据
         }
@@ -250,7 +250,7 @@ void L5_IMU_data_handler()
     if (csvFile == NULL)
     {
         perror("无法打开CSV文件");
-        return 1;
+        return;
     }
 
     fprintf(csvFile, "Timestamp,Row,Col,x,y,z,distance,IMU_x,IMU_y,IMU_z,IMU_roll,IMU_pitch,IMU_yaw,LiDAR_x,LiDAR_y,LiDAR_z,LiDAR_roll,LiDAR_pitch,LiDAR_yaw,EKF_x,EKF_y,EKF_z,EKF_roll,EKF_pitch,EKF_yaw\n");
@@ -378,9 +378,12 @@ void L5_IMU_data_handler()
 // L9 运行逻辑测试
 void L9_data_handler()
 {
-    PointCloud lidarData[40]; // L9_LiDAR数据帧
+    static PointCloud lidarData[40]; // L9_LiDAR数据帧
+    static SLAM_attr slamattr;
     size_t lidarCount = 0;
-    L9_LidarProcessData("parsed_data.csv", lidarData, &lidarCount); // 读取LiDAR数据
+    memset(lidarData, 0, sizeof(lidarData));
+    memset(&slamattr, 0, sizeof(slamattr));
+    L9_LidarProcessData("./dataset/L9dataset11_parsed.csv", lidarData, &lidarCount); // 读取LiDAR数据
 
 #ifdef FILE_PRINT
     // 打开CSV文件用于写入
@@ -388,7 +391,7 @@ void L9_data_handler()
     if (csvFile == NULL)
     {
         perror("无法打开CSV文件");
-        return 1;
+        return;
     }
 
     fprintf(csvFile, "Timestamp,Row,Col,x,y,z,distance,IMU_x,IMU_y,IMU_z,IMU_roll,IMU_pitch,IMU_yaw,LiDAR_x,LiDAR_y,LiDAR_z,LiDAR_roll,LiDAR_pitch,LiDAR_yaw,EKF_x,EKF_y,EKF_z,EKF_roll,EKF_pitch,EKF_yaw\n");
@@ -397,7 +400,6 @@ void L9_data_handler()
     // 用第一帧数据，初始化必要的参数
     Pos pos;
     pos.roll = pos.pitch = pos.yaw = pos.x = pos.y = pos.z = 0;
-    SLAM_attr slamattr;
     init_slam(&slamattr, pos, lidarData);
 
 #ifdef DEBUG_PRINT

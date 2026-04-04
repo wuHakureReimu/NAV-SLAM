@@ -425,6 +425,7 @@ void init_slam(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud)
 
     #ifdef FEATURE_DEBUG_PRINT
     FILE *csvFile = fopen("feature_data.csv", "w");
+    fprintf(csvFile, "frame,row,col,x,y,z,is_edge,is_planar\n");
     for (int row = 0; row < MAX_ROWS; ++row) {
         for (int col = 0; col < MAX_COLS; ++col) {
             fprintf(csvFile, "%d,%d,%d,%lf,%lf,%lf,%d,%d\n",

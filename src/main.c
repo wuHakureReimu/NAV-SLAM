@@ -121,6 +121,7 @@ void L9_LidarProcessData(const char *filename, PointCloud *lidarData, size_t *li
         lidarData[*lidarCount].ToF_position[row][col].x = x;
         lidarData[*lidarCount].ToF_position[row][col].y = y;
         lidarData[*lidarCount].ToF_position[row][col].z = z;
+        lidarData[*lidarCount].conf[row][col] = conf;
     }
 
     // 处理最后一帧：如果至少有一帧，则帧数为当前索引+1；否则为0
@@ -377,7 +378,7 @@ void L5_IMU_data_handler()
 // L9 运行逻辑测试
 void L9_data_handler()
 {
-    PointCloud lidarData[10]; // L9_LiDAR数据帧
+    PointCloud lidarData[40]; // L9_LiDAR数据帧
     size_t lidarCount = 0;
     L9_LidarProcessData("parsed_data.csv", lidarData, &lidarCount); // 读取LiDAR数据
 
@@ -497,6 +498,6 @@ void L9_data_handler()
 // 运行逻辑
 int main()
 {
-    L5_IMU_data_handler();
+    L9_data_handler();
     return 0;
 }

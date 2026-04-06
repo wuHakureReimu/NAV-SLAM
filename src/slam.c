@@ -135,6 +135,7 @@ void init_slam(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud)
 {
     // 初始化frameCount
     attr->frameCount = 0;
+    attr->error = 0.0;
 
     double R[3][3];
     getRotationMatrix(DEG2RAD(pos.roll), DEG2RAD(pos.pitch), DEG2RAD(pos.yaw), R);
@@ -369,6 +370,12 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
         }
 
         printf("Iteration %d, Total Error: %.6f\n", iter, totalError);
+    }
+
+    if (validGradientCount > 0) {
+        attr->error = sqrt(totalError / validGradientCount);
+    } else {
+        attr->error = 0.0;
     }
     
     Pos pos_modified;

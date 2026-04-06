@@ -28,9 +28,9 @@ void init_ekf(EKF_attr *attr, Pos *init_pos) {
             attr->Q[i][j] = 0.0;
         }
     }
-    attr->Q[0][0] = 0.1;    // x 过程噪声
-    attr->Q[1][1] = 0.1;    // y 过程噪声
-    attr->Q[2][2] = 0.1;    // z 过程噪声
+    attr->Q[0][0] = 0.05;    // x 过程噪声
+    attr->Q[1][1] = 0.05;    // y 过程噪声
+    attr->Q[2][2] = 0.05;    // z 过程噪声
     attr->Q[3][3] = 0.05;   // roll 过程噪声
     attr->Q[4][4] = 0.05;   // pitch 过程噪声
     attr->Q[5][5] = 0.05;   // yaw 过程噪声
@@ -108,5 +108,20 @@ void ekf_modify(EKF_attr *attr, Pos *LiDAR_measurement_pos) {
     // 协方差更新：P = (I - K * H) * P = (I - K) * P    
     for (int i = 0; i < 6; i++) {
         attr->P[i][i] = (1 - K[i][i]) * attr->P[i][i];
+    }
+}
+
+void update_R(EKF_attr *attr, double error)
+{
+    // 基线观测噪声，对应状态 x,y,z,roll,pitch,yaw
+    const double base_R[6] = {0.05, 0.05, 0.05, 0.1, 0.1, 0.1};
+    double gain = 10.0;   // 放缩因子
+    double scale = 1 + gain * error / (1 + error);
+
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 6; j++) {
+            attr->R[i][j] = 0.0;
+        }
+        attr->R[i][i] = base_R[i] * scale;
     }
 }

@@ -12,6 +12,9 @@ typedef struct
     PointCloud globalPointCloud[100];   // 全局点云地图
     int frameCount;                     // 用这玩意和上面的数组形成一个丐版vector
     KDNode* kdtree_lastframe[MAX_ROWS];  // 存储上一帧点云的特征点KD-tree，每行一棵树，雷达坐标系
+
+    // 当前雷达帧配准残差
+    double error;
 } SLAM_attr;
 
 

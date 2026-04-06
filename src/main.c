@@ -309,6 +309,7 @@ void L5_IMU_data_handler() {
         Pos pos_measure = slam_localization(&slamattr, &lidarPointCloud, pos_predict, last_pos);
 
         // ekf修正
+        update_R(&ekfattr, slamattr.error);
         ekf_modify(&ekfattr, &pos_measure);
         pos = ekfattr.pos;
 
@@ -475,6 +476,6 @@ void L9_data_handler() {
 // 运行逻辑
 int main()
 {
-    L9_data_handler();
+    L5_IMU_data_handler();
     return 0;
 }

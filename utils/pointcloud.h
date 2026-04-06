@@ -6,8 +6,8 @@
 #define L5_MAX_COLS 8
 #define L9_MAX_ROWS 54
 #define L9_MAX_COLS 42
-#define MAX_ROWS L9_MAX_ROWS   // 在此处配置雷达分辨率
-#define MAX_COLS L9_MAX_COLS
+#define MAX_ROWS L5_MAX_ROWS // 在此处配置雷达分辨率
+#define MAX_COLS L5_MAX_COLS
 
 // L5雷达帧
 typedef struct

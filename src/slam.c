@@ -15,19 +15,26 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
     const int smooth_window = 2;         // 平滑窗口大小，可调整
     const double edge_threshold = 0.10;  // 曲率阈值
     const double plane_threshold = 0.10; // 平面点阈值
-    const int max_edge_per_row = 4;
+    const int edge_suppress_radius = 1;
     const int max_plane_per_row = 4;
-    const int min_conf = 1; // 排除不可信点
+    const int min_conf = 1;                                  // 排除不可信点
+    const int min_edge_component_size = 2;                   // 连通域最少点数
+    const int min_edge_component_span = 2;                   // 连通域在行或列方向上至少延伸这么多格
+    const double boundary_ratio = 0.45;                      // 中心点必须明显更靠近某一侧
+    const double boundary_boost = 0.75;                      // 轮廓边响应并入总edge响应时的权重
+    const double boundary_min_jump = edge_threshold * 200.0; // 最小深度跳变，约20mm
 
     // 遍历每个点（跳过边缘的点）
     for (int i = 0; i < MAX_ROWS; i++)
     {
-        double curvature[MAX_COLS] = {0.0}; // 存储每个点的曲率值
+        double curvature[MAX_COLS] = {0.0};     // 存储每个点的曲率值
+        double edge_response[MAX_COLS] = {0.0}; // 新增：专门给 edge 用的响应值
         for (int j = smooth_window; j < MAX_COLS - smooth_window; j++)
         {
             if (lidarPointCloud->conf[i][j] < min_conf)
             {
                 curvature[j] = 0.0;
+                edge_response[j] = 0.0;
                 continue;
             }
             // 获取当前点
@@ -81,64 +88,118 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
                 curv = sum_var / count / (avg_dist * avg_dist + 1e-6f);
             }
             curvature[j] = curv;
+
+            // edge 特征提取改为基于左右小窗口均值的局部峰/谷响应，降低单点噪声影响
+            double z_mid = current_point.z;
+            double left_sum = 0.0, right_sum = 0.0;
+            int left_count = 0, right_count = 0;
+
+            for (int k = 1; k <= smooth_window; k++)
+            {
+                if (lidarPointCloud->conf[i][j - k] >= min_conf)
+                {
+                    left_sum += lidarPointCloud->ToF_position[i][j - k].z;
+                    left_count++;
+                }
+                if (lidarPointCloud->conf[i][j + k] >= min_conf)
+                {
+                    right_sum += lidarPointCloud->ToF_position[i][j + k].z;
+                    right_count++;
+                }
+            }
+
+            if (left_count == 0 || right_count == 0)
+            {
+                edge_response[j] = 0.0;
+                continue;
+            }
+
+            double z_left_mean = left_sum / left_count;
+            double z_right_mean = right_sum / right_count;
+
+            double diff_left = z_mid - z_left_mean;
+            double diff_right = z_mid - z_right_mean;
+            double second_diff = z_left_mean - 2.0 * z_mid + z_right_mean;
+            double side_asymmetry = fabs(z_left_mean - z_right_mean);
+
+            // 1) 折线边：中心点同时高于左右均值或同时低于左右均值，更像局部峰/谷
+            double crease_response = 0.0;
+            if (diff_left * diff_right > 0.0)
+            {
+                crease_response = fabs(second_diff) - 0.35 * side_asymmetry;
+                if (crease_response < 0.0)
+                    crease_response = 0.0;
+            }
+
+            // 2) 轮廓边：左右两侧深度有明显跳变，且当前点明显更靠近其中一侧
+            double dist_left = fabs(z_mid - z_left_mean);
+            double dist_right = fabs(z_mid - z_right_mean);
+            double near_side = fmin(dist_left, dist_right);
+            double far_side = fmax(dist_left, dist_right);
+
+            double boundary_response = 0.0;
+            if (side_asymmetry > boundary_min_jump &&
+                far_side > 1e-6 &&
+                near_side < boundary_ratio * far_side)
+            {
+                boundary_response = side_asymmetry - 0.5 * near_side;
+                if (boundary_response < 0.0)
+                    boundary_response = 0.0;
+            }
+
+            // 两类边取更强的一种
+            edge_response[j] = fmax(crease_response, boundary_boost * boundary_response);
         }
 
-        // 计算当前行的曲率最大值，动态调整边缘特征阈值
-        double row_max_curv = 0.0;
+        // 用新的 edge_response 来做 edge 阈值
+        double row_max_edge = 0.0;
         for (int j = smooth_window; j < MAX_COLS - smooth_window; j++)
         {
-            if (curvature[j] > row_max_curv)
-                row_max_curv = curvature[j];
+            if (edge_response[j] > row_max_edge)
+                row_max_edge = edge_response[j];
         }
-        double row_edge_threshold = edge_threshold;
-        if (row_max_curv * 0.45 > row_edge_threshold)
-            row_edge_threshold = row_max_curv * 0.45;
 
-        // 按照曲率排序选 edge 和 plane 特征点
+        double row_edge_threshold = row_max_edge * 0.30;
+        if (row_edge_threshold < edge_threshold * 220.0)
+            row_edge_threshold = edge_threshold * 220.0;
+
+        // edge 整行扫描：阈值 + 局部极大值 + 抑制半径
         int suppressed_edge[MAX_COLS] = {0};
-        for (int n = 0; n < max_edge_per_row; n++)
+        for (int j = smooth_window; j < MAX_COLS - smooth_window; j++)
         {
-            int best_col = -1;
-            double best_curv = row_edge_threshold;
-            for (int j = smooth_window; j < MAX_COLS - smooth_window; j++)
-            {
-                if (lidarPointCloud->conf[i][j] < min_conf)
-                    continue;
-                if (suppressed_edge[j])
-                    continue; // 跳过已抑制的点
-                // 新增：edge 必须是局部极大值，避免仅凭 top-k 选到次优点
-                int is_local_max = 1;
-                for (int t = j - 1; t <= j + 1; t++)
-                {
-                    if (t < smooth_window || t >= MAX_COLS - smooth_window || t == j)
-                        continue;
-                    if (curvature[j] <= curvature[t])
-                    {
-                        is_local_max = 0;
-                        break;
-                    }
-                }
-                if (!is_local_max)
-                    continue;
+            if (lidarPointCloud->conf[i][j] < min_conf)
+                continue;
+            if (suppressed_edge[j])
+                continue;
+            if (edge_response[j] < row_edge_threshold)
+                continue;
 
-                if (curvature[j] > best_curv)
+            // 局部极大值判定改为看 edge_response，而不是旧的 curvature
+            int is_local_max = 1;
+            for (int t = j - smooth_window; t <= j + smooth_window; t++)
+            {
+                if (t < smooth_window || t >= MAX_COLS - smooth_window || t == j)
+                    continue;
+                if (edge_response[j] <= edge_response[t])
                 {
-                    best_curv = curvature[j];
-                    best_col = j;
+                    is_local_max = 0;
+                    break;
                 }
             }
+            if (!is_local_max)
+                continue;
 
-            if (best_col != -1)
+            edge_feature[i][j] = 1;
+
+            // 扩大抑制范围，避免 edge 在同一条局部结构上撒成一串
+            for (int t = j - edge_suppress_radius; t <= j + edge_suppress_radius; t++)
             {
-                edge_feature[i][best_col] = 1;
-                // 抑制相邻点
-                for (int t = best_col - 1; t <= best_col + 1; t++)
-                {
-                    if (t >= 0 && t < MAX_COLS)
-                        suppressed_edge[t] = 1;
-                }
+                if (t >= 0 && t < MAX_COLS)
+                    suppressed_edge[t] = 1;
             }
         }
+
+        // plane 特征提取：选取曲率最小的点作为 plane 特征，并且同样增加抑制半径避免过密
         int suppressed_plane[MAX_COLS] = {0};
         for (int j = 0; j < MAX_COLS; j++)
         {
@@ -174,6 +235,230 @@ void extract_feature(PointCloud *lidarPointCloud, int edge_feature[MAX_ROWS][MAX
                         suppressed_plane[t] = 1;
                 }
             }
+        }
+    }
+
+    // 按列再提一遍 edge，补充跨行明显的边界
+    for (int j = smooth_window; j < MAX_COLS - smooth_window; j++)
+    {
+        double col_edge_response[MAX_ROWS] = {0.0};
+
+        for (int i = smooth_window; i < MAX_ROWS - smooth_window; i++)
+        {
+            if (lidarPointCloud->conf[i][j] < min_conf)
+            {
+                col_edge_response[i] = 0.0;
+                continue;
+            }
+
+            double z_mid = lidarPointCloud->ToF_position[i][j].z;
+            double up_sum = 0.0, down_sum = 0.0;
+            int up_count = 0, down_count = 0;
+
+            for (int k = 1; k <= smooth_window; k++)
+            {
+                if (lidarPointCloud->conf[i - k][j] >= min_conf)
+                {
+                    up_sum += lidarPointCloud->ToF_position[i - k][j].z;
+                    up_count++;
+                }
+                if (lidarPointCloud->conf[i + k][j] >= min_conf)
+                {
+                    down_sum += lidarPointCloud->ToF_position[i + k][j].z;
+                    down_count++;
+                }
+            }
+
+            if (up_count == 0 || down_count == 0)
+            {
+                col_edge_response[i] = 0.0;
+                continue;
+            }
+
+            double z_up_mean = up_sum / up_count;
+            double z_down_mean = down_sum / down_count;
+
+            double diff_up = z_mid - z_up_mean;
+            double diff_down = z_mid - z_down_mean;
+            double second_diff = z_up_mean - 2.0 * z_mid + z_down_mean;
+            double side_asymmetry = fabs(z_up_mean - z_down_mean);
+
+            // 1) 折线边：中心点同时高于上下均值或同时低于上下均值
+            double crease_response = 0.0;
+            if (diff_up * diff_down > 0.0)
+            {
+                crease_response = fabs(second_diff) - 0.35 * side_asymmetry;
+                if (crease_response < 0.0)
+                    crease_response = 0.0;
+            }
+
+            // 2) 轮廓边：上下两侧深度有明显跳变，且当前点更靠近其中一侧
+            double dist_up = fabs(z_mid - z_up_mean);
+            double dist_down = fabs(z_mid - z_down_mean);
+            double near_side = fmin(dist_up, dist_down);
+            double far_side = fmax(dist_up, dist_down);
+
+            double boundary_response = 0.0;
+            if (side_asymmetry > boundary_min_jump &&
+                far_side > 1e-6 &&
+                near_side < boundary_ratio * far_side)
+            {
+                boundary_response = side_asymmetry - 0.5 * near_side;
+                if (boundary_response < 0.0)
+                    boundary_response = 0.0;
+            }
+
+            col_edge_response[i] = fmax(crease_response, boundary_boost * boundary_response);
+        }
+
+        double col_max_edge = 0.0;
+        for (int i = smooth_window; i < MAX_ROWS - smooth_window; i++)
+        {
+            if (col_edge_response[i] > col_max_edge)
+                col_max_edge = col_edge_response[i];
+        }
+
+        double col_edge_threshold = col_max_edge * 0.30;
+        if (col_edge_threshold < edge_threshold * 220.0)
+            col_edge_threshold = edge_threshold * 220.0;
+
+        int suppressed_edge_col[MAX_ROWS] = {0};
+        for (int i = smooth_window; i < MAX_ROWS - smooth_window; i++)
+        {
+            if (lidarPointCloud->conf[i][j] < min_conf)
+                continue;
+            if (suppressed_edge_col[i])
+                continue;
+            if (col_edge_response[i] < col_edge_threshold)
+                continue;
+
+            int is_local_max = 1;
+            for (int t = i - smooth_window; t <= i + smooth_window; t++)
+            {
+                if (t < smooth_window || t >= MAX_ROWS - smooth_window || t == i)
+                    continue;
+                if (col_edge_response[i] <= col_edge_response[t])
+                {
+                    is_local_max = 0;
+                    break;
+                }
+            }
+            if (!is_local_max)
+                continue;
+
+            edge_feature[i][j] = 1; // 与按行提取结果做并集
+
+            for (int t = i - edge_suppress_radius; t <= i + edge_suppress_radius; t++)
+            {
+                if (t >= 0 && t < MAX_ROWS)
+                    suppressed_edge_col[t] = 1;
+            }
+        }
+    }
+    // 对候选 edge_feature 做 8 邻域连通域筛选，只保留连续边缘链
+    {
+        int visited[MAX_ROWS][MAX_COLS] = {0};
+        int filtered_edge[MAX_ROWS][MAX_COLS] = {0};
+
+        int queue_r[MAX_ROWS * MAX_COLS];
+        int queue_c[MAX_ROWS * MAX_COLS];
+        int comp_r[MAX_ROWS * MAX_COLS];
+        int comp_c[MAX_ROWS * MAX_COLS];
+
+        for (int si = 0; si < MAX_ROWS; si++)
+        {
+            for (int sj = 0; sj < MAX_COLS; sj++)
+            {
+                if (edge_feature[si][sj] != 1 || visited[si][sj])
+                    continue;
+
+                int head = 0, tail = 0;
+                int comp_size = 0;
+
+                int min_r = si, max_r = si;
+                int min_c = sj, max_c = sj;
+
+                visited[si][sj] = 1;
+                queue_r[tail] = si;
+                queue_c[tail] = sj;
+                tail++;
+
+                while (head < tail)
+                {
+                    int r = queue_r[head];
+                    int c = queue_c[head];
+                    head++;
+
+                    comp_r[comp_size] = r;
+                    comp_c[comp_size] = c;
+                    comp_size++;
+
+                    if (r < min_r)
+                        min_r = r;
+                    if (r > max_r)
+                        max_r = r;
+                    if (c < min_c)
+                        min_c = c;
+                    if (c > max_c)
+                        max_c = c;
+
+                    for (int dr = -1; dr <= 1; dr++)
+                    {
+                        for (int dc = -1; dc <= 1; dc++)
+                        {
+                            if (dr == 0 && dc == 0)
+                                continue;
+
+                            int nr = r + dr;
+                            int nc = c + dc;
+
+                            if (nr < 0 || nr >= MAX_ROWS || nc < 0 || nc >= MAX_COLS)
+                                continue;
+                            if (visited[nr][nc])
+                                continue;
+                            if (edge_feature[nr][nc] != 1)
+                                continue;
+
+                            visited[nr][nc] = 1;
+                            queue_r[tail] = nr;
+                            queue_c[tail] = nc;
+                            tail++;
+                        }
+                    }
+                }
+
+                int row_span = max_r - min_r + 1;
+                int col_span = max_c - min_c + 1;
+
+                // 只保留足够连续、足够延展的连通域
+                if (comp_size >= min_edge_component_size &&
+                    (row_span >= min_edge_component_span || col_span >= min_edge_component_span))
+                {
+                    for (int k = 0; k < comp_size; k++)
+                    {
+                        filtered_edge[comp_r[k]][comp_c[k]] = 1;
+                    }
+                }
+            }
+        }
+
+        // 用筛选后的 edge_feature 覆盖原候选结果
+        for (int i = 0; i < MAX_ROWS; i++)
+        {
+            for (int j = 0; j < MAX_COLS; j++)
+            {
+                edge_feature[i][j] = filtered_edge[i][j];
+            }
+        }
+    }
+
+    // 列方向补出来的 edge 不再同时作为 plane 使用
+    for (int i = 0; i < MAX_ROWS; i++)
+    {
+        for (int j = 0; j < MAX_COLS; j++)
+        {
+            if (edge_feature[i][j] == 1)
+                plane_feature[i][j] = 0;
         }
     }
 
@@ -430,6 +715,87 @@ static int findTwoNearestPlaneNeighbors(SLAM_attr *attr, Point *anchorPoint, int
     return 1;
 }
 
+static int findBestEdgeLineNeighbors(SLAM_attr *attr, Point *queryPoint, int centerRow, int searchRadius,
+                                     double maxFirstNeighborDist, double maxSecondNeighborDist, double minLineLength,
+                                     Point *lineA, double *distA, Point *lineB, double *distB)
+{
+    int bestRowA = -1;
+    int bestRowB = -1;
+
+    *distA = INFINITY;
+    *distB = INFINITY;
+
+    // 第一个点：在局部二维行窗里，找距离当前点最近的 edge 邻居
+    for (int r = centerRow - searchRadius; r <= centerRow + searchRadius; ++r)
+    {
+        if (r < 0 || r >= MAX_ROWS)
+            continue;
+        if (attr->kdtree_edge_lastframe[r] == NULL)
+            continue;
+
+        Point candidatePoint;
+        double candidateDist = INFINITY;
+        nearestNeighborSearch(attr->kdtree_edge_lastframe[r],
+                              queryPoint,
+                              &candidatePoint,
+                              &candidateDist,
+                              0);
+
+        if (candidateDist < *distA)
+        {
+            *distA = candidateDist;
+            *lineA = candidatePoint;
+            bestRowA = r;
+        }
+    }
+
+    if (bestRowA == -1 || *distA > maxFirstNeighborDist)
+        return 0;
+
+    // 第二个点：仍在局部二维行窗里找，但不再只限于 row-1 / row+1
+    // 用 lineA 作为查询点，找能和 lineA 构成有效线段的第二个点
+    for (int r = centerRow - searchRadius; r <= centerRow + searchRadius; ++r)
+    {
+        if (r < 0 || r >= MAX_ROWS)
+            continue;
+        if (r == bestRowA)
+            continue;
+        if (attr->kdtree_edge_lastframe[r] == NULL)
+            continue;
+
+        Point candidatePoint;
+        double candidateDist = INFINITY;
+        nearestNeighborSearch(attr->kdtree_edge_lastframe[r],
+                              lineA,
+                              &candidatePoint,
+                              &candidateDist,
+                              0);
+
+        if (candidateDist > maxSecondNeighborDist)
+            continue;
+
+        double dx = lineA->x - candidatePoint.x;
+        double dy = lineA->y - candidatePoint.y;
+        double dz = lineA->z - candidatePoint.z;
+        double lineLen = sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (lineLen < minLineLength)
+            continue;
+
+        if (candidateDist < *distB)
+        {
+            *distB = candidateDist;
+            *lineB = candidatePoint;
+            bestRowB = r;
+        }
+    }
+
+    if (bestRowB == -1)
+        return 0;
+
+    return 1;
+}
+
 // 用第一帧数据初始化
 void init_slam(SLAM_attr *attr, Pos pos, PointCloud *lidarPointCloud)
 {
@@ -590,6 +956,7 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
     double min_line_length = 50.0;           // 最小线特征长度，单位：mm
     double max_first_neighbor_dist = 800.0;  // 最近邻点距离阈值，单位：mm
     double max_second_neighbor_dist = 800.0; // 第二近邻点距离阈值，单位：mm
+    int edge_row_search_radius = 2;          // edge 对应搜索的局部二维行窗半径
     int min_corr_count = 4;                  // 最小有效对应点数量，过少则跳过当前迭代
     // plane
     double max_plane_neighbor_dist = 1000.0; // 面特征点距离阈值，单位：mm
@@ -613,38 +980,25 @@ Pos slam_localization(SLAM_attr *attr, PointCloud *lidarPointCloud, Pos pos_pred
                 {
                     if (edge_feature[row][col] == 1)
                     { // 只处理特征点
-                        // 最近邻查找
                         Point currentPoint = positionInLastFrame.ToF_position[row][col];
-                        Point lineA;
-                        double bestDistA = INFINITY; // 初始设为一个非常大的值
-                        nearestNeighborSearch(attr->kdtree_edge_lastframe[row], &currentPoint, &lineA, &bestDistA, 0);
-
-                        if (bestDistA > max_first_neighbor_dist) // 如果最近邻点距离超过阈值，则跳过这个点
-                            continue;
-
-                        // 第二近邻查找（相邻行里查找）
-                        Point candUp, candDown, lineB;
-                        double distUp = INFINITY;
-                        double distDown = INFINITY;
+                        Point lineA, lineB;
+                        double bestDistA = INFINITY;
                         double bestDistB = INFINITY;
 
-                        if (row > 0)
-                            nearestNeighborSearch(attr->kdtree_edge_lastframe[row - 1], &lineA, &candUp, &distUp, 0);
+                        int foundLineNeighbors = findBestEdgeLineNeighbors(
+                            attr,
+                            &currentPoint,
+                            row,
+                            edge_row_search_radius,
+                            max_first_neighbor_dist,
+                            max_second_neighbor_dist,
+                            min_line_length,
+                            &lineA,
+                            &bestDistA,
+                            &lineB,
+                            &bestDistB);
 
-                        if (row < MAX_ROWS - 1)
-                            nearestNeighborSearch(attr->kdtree_edge_lastframe[row + 1], &lineA, &candDown, &distDown, 0);
-
-                        if (distUp < distDown)
-                        {
-                            lineB = candUp;
-                            bestDistB = distUp;
-                        }
-                        else
-                        {
-                            lineB = candDown;
-                            bestDistB = distDown;
-                        }
-                        if (bestDistB > max_second_neighbor_dist) // 如果第二近邻点距离超过阈值，则跳过这个点
+                        if (!foundLineNeighbors)
                             continue;
 
                         double line_dx = lineA.x - lineB.x;
